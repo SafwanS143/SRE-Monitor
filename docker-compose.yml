@@ -1,0 +1,7 @@
+version: "3.8"
+services:
+  target-api:
+    build: ./target-api
+    container_name: target-api
+    ports:
+      - "8000:8000"
