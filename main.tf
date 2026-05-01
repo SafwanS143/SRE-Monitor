@@ -27,6 +27,8 @@ resource "aws_instance" "monitor_target" {
     mkdir -p /home/ec2-user/sre-project
     chown -R ec2-user:ec2-user /home/ec2-user/sre-project
     mkdir -p /usr/local/lib/docker/cli-plugins
+    curl -SL https://github.com/docker/buildx/releases/latest/download/buildx-linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
     curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
   EOF
