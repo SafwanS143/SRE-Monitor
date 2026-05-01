@@ -2,6 +2,7 @@ import docker
 import requests
 import time
 import os
+from datetime import datetime
 
 TARGET_URL = os.getenv("TARGET_URL", "http://target-api:8000/health")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "15"))
@@ -14,7 +15,8 @@ client = docker.from_env()
 def send_slack(message):
     if SLACK_WEBHOOK:
         try:
-            requests.post(SLACK_WEBHOOK, json={"text": message}, timeout=5)
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            requests.post(SLACK_WEBHOOK, json={"text": f"[{timestamp}] {message}"}, timeout=5)
         except Exception:
             pass
 
