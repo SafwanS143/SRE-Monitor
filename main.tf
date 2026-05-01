@@ -54,7 +54,11 @@ resource "aws_security_group" "sre_sg" {
   }
 }
 
-# Print the public IP after apply
-output "instance_ip" {
-  value = aws_instance.monitor_target.public_ip
+resource "aws_eip" "main" {
+  instance = aws_instance.monitor_target.id
+  domain   = "vpc"
+}
+
+output "elastic_ip" {
+  value = aws_eip.main.public_ip
 }
