@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 import uvicorn
 
 app = FastAPI()
@@ -8,7 +9,7 @@ healthy = True  # we'll toggle this with /chaos and /recover
 def health():
     if healthy:
         return {"status": "ok"}
-    return {"status": "unhealthy"}, 500
+    return JSONResponse(content={"status": "unhealthy"}, status_code=500)
 
 @app.post("/chaos")
 def chaos():

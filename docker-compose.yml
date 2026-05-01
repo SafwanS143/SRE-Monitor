@@ -1,7 +1,19 @@
-version: "3.8"
 services:
   target-api:
     build: ./target-api
     container_name: target-api
     ports:
       - "8000:8000"
+
+  monitor:
+    build: ./monitor
+    container_name: monitor
+    environment:
+      - TARGET_URL=http://target-api:8000/health
+      - CONTAINER_NAME=target-api
+      - SLACK_WEBHOOK=${SLACK_WEBHOOK}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - target-api
+    restart: always
