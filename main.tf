@@ -17,6 +17,19 @@ resource "aws_instance" "monitor_target" {
   key_name               = aws_key_pair.sre_key.key_name
   vpc_security_group_ids = [aws_security_group.sre_sg.id]
 
+  user_data = <<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y docker
+    systemctl start docker
+    systemctl enable docker
+    usermod -aG docker ec2-user
+    mkdir -p /usr/local/lib/docker/cli-plugins
+    curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+    mkdir -p /home/ec2-user/sre-project
+  EOF
+
   tags = {
     Name = "sre-project"
   }
