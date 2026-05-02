@@ -15,8 +15,15 @@ jobs:
 
       - name: Copy files to EC2
         uses: appleboy/scp-action@v0.1.7
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "."
+          target: "~/sre-project"
+
+      - name: Restart containers
+        uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
@@ -27,16 +34,5 @@ jobs:
             echo "SLACK_WEBHOOK=$SLACK_WEBHOOK" > .env
             sudo docker compose down
             sudo docker compose up -d --build
-          source: "."
-          target: "~/sre-project"
-
-      - name: Restart containers
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd ~/sre-project
-            sudo docker compose down
-            sudo docker compose up -d --build
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
