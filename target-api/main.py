@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 import uvicorn
+from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI()
+Instrumentator().instrument(app).expose(app)
 healthy = True  # we'll toggle this with /chaos and /recover
 
 @app.get("/health")

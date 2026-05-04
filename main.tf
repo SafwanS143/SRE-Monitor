@@ -44,7 +44,7 @@ resource "aws_key_pair" "sre_key" {
   public_key = file("C:\\Users\\shibl\\.ssh\\sre-key.pub")
 }
 
-# Security group — opens SSH (22) and API (8000) ports
+# Security group — opens SSH (22), API (8000), Prometheus (9090), and Grafana (3000) ports
 resource "aws_security_group" "sre_sg" {
   name = "sre-monitor-sg"
 
@@ -58,6 +58,20 @@ resource "aws_security_group" "sre_sg" {
   ingress {
     from_port   = 8000
     to_port     = 8000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 3000
+    to_port     = 3000
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }

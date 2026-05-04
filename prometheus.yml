@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: target-api
+    static_configs:
+      - targets: ["target-api:8000"]
