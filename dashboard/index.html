@@ -519,7 +519,7 @@ function renderSlack(alerts) {
   const sorted = [...alerts].sort((a, b) => b.id - a.id);
   el.innerHTML = sorted.map(a => {
     const ts  = toEastern(a.timestamp);
-    const msg = esc(a.message.replace(/:\w+:/g, '').replace(/\*([^*]+)\*/g, '$1').trim());
+    const msg = esc(a.message.replace(/:[a-zA-Z][a-zA-Z0-9_]*:/g, '').replace(/\*([^*]+)\*/g, '$1').trim());
     const tc  = ['FAILURE','RECOVERED','ANOMALY'].includes(a.type) ? a.type : 'ANOMALY';
     return `<div class="sl-row">
       <div class="si">${SLACK_SVG}</div>
