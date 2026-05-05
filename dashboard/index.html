@@ -194,7 +194,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
           <span id="pill-txt">operational</span>
         </span>
       </div>
-      <div class="svc-host">ec2-54-211-38-92.compute-1.amazonaws.com &middot; us-east-1</div>
+      <div class="svc-host" id="svc-host"></div>
     </div>
     <div class="tb-right">
       <div>last checked <strong id="t-ago">—</strong></div>
@@ -576,6 +576,9 @@ function applyLogs(d) {
   }).join('');
   body.scrollTop = body.scrollHeight;
 }
+
+// ── Host display ─────────────────────────────────────────────────────────
+document.getElementById('svc-host').textContent = window.location.hostname + ' · us-east-1';
 
 // ── Polling ───────────────────────────────────────────────────────────────
 async function pollStatus() {

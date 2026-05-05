@@ -38,19 +38,26 @@ resource "aws_instance" "monitor_target" {
   }
 }
 
-# Key pair — uploads public key to AWS
+# Key pair - uploads public key to AWS
 resource "aws_key_pair" "sre_key" {
   key_name   = "sre-key"
   public_key = file("C:\\Users\\shibl\\.ssh\\sre-key.pub")
 }
 
-# Security group — opens SSH (22), API (8000), Prometheus (9090), and Grafana (3000) ports
+# Security group - opens SSH (22), HTTP (80), API (8000), Prometheus (9090), and Grafana (3000) ports
 resource "aws_security_group" "sre_sg" {
   name = "sre-monitor-sg"
 
   ingress {
     from_port   = 22
     to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
