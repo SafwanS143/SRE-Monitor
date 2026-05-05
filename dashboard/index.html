@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SRE Monitor — target-api</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --bg:#0D1117;
+  --surface:#161C2D;
+  --surface2:#1C2438;
+  --border:rgba(255,255,255,0.07);
+  --text:rgba(255,255,255,0.9);
+  --muted:rgba(255,255,255,0.38);
+  --green:#639922;
+  --green-text:#3B6D11;
+  --green-bg:#EAF3DE;
+  --red:#E24B4A;
+  --red-text:#A32D2D;
+  --red-bg:#FCEBEB;
+  --amber:#BA7517;
+  --amber-text:#854F0B;
+  --amber-bg:#FAEEDA;
+  --blue:#185FA5;
+  --gap:10px;
+  --r:10px;
+}
+
+html,body{height:100%;background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  font-size:13px;line-height:1.4}
+
+#root{
+  display:grid;
+  height:100vh;
+  overflow:hidden;
+  grid-template-rows:auto auto 1fr 1.45fr 1.15fr;
+  gap:var(--gap);
+  padding:var(--gap);
+}
+
+/* ── Topbar ─────────────────────────────────────────────── */
+#topbar{
+  display:flex;align-items:center;gap:10px;
+  padding:4px 4px 10px;
+  border-bottom:0.5px solid var(--border);
+}
+.svc-name{font-size:15px;font-weight:500}
+.svc-host{font-size:12px;color:var(--muted);margin-top:3px}
+.pill{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:3px 10px 3px 8px;border-radius:999px;
+  font-size:12px;font-weight:500;white-space:nowrap;
+}
+.pill.ok {background:var(--green-bg);color:var(--green-text)}
+.pill.fail{background:var(--red-bg);color:var(--red-text)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}
+.pill.ok   .dot{background:var(--green-text);animation:pulse 1s step-end infinite}
+.pill.fail .dot{background:var(--red-text)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
+.tb-right{margin-left:auto;font-size:12px;color:var(--muted);text-align:right;line-height:1.7}
+.tb-right strong{font-weight:500;color:var(--text)}
+
+/* ── Metric cards ────────────────────────────────────────── */
+#cards{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--gap)}
+.card{
+  background:var(--surface);border-radius:var(--r);
+  padding:14px 16px;border:1px solid var(--border);
+}
+.card-lbl{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:5px}
+.card-val{font-size:22px;font-weight:500;line-height:1.1}
+.card-val.c-green{color:var(--green)}
+.card-val.c-amber{color:var(--amber-text)}
+.card-val.c-red  {color:var(--red-text)}
+.card-sub{font-size:11px;color:var(--muted);margin-top:4px}
+
+/* ── Shared panel ────────────────────────────────────────── */
+.panel{
+  background:var(--surface);border-radius:var(--r);
+  padding:14px 16px;border:1px solid var(--border);
+  display:flex;flex-direction:column;min-height:0;overflow:hidden;
+}
+.panel-title{
+  font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);margin-bottom:8px;flex-shrink:0;
+}
+
+/* ── Charts row ──────────────────────────────────────────── */
+#charts{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);min-height:0}
+.chart-wrap{flex:1;position:relative;min-height:0}
+
+/* ── Mid row ─────────────────────────────────────────────── */
+#mid{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);min-height:0}
+
+/* Docker logs */
+#logs-panel{background:#0F172A}
+#logs-panel .panel-title{color:rgba(255,255,255,0.22)}
+#logs-body{
+  flex:1;overflow-y:auto;min-height:0;
+  font-family:'SF Mono','Cascadia Code','Fira Code',ui-monospace,monospace;
+  font-size:12px;line-height:1.8;
+}
+#logs-body::-webkit-scrollbar{width:3px}
+#logs-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:2px}
+.ll{display:block}
+.ll .ts{color:rgba(255,255,255,0.25)}
+.lv-OK     {color:#639922}
+.lv-FAIL   {color:#E24B4A}
+.lv-RESTART{color:#185FA5}
+.lv-ANOMALY{color:#BA7517}
+.lv-MONITOR,.lv-ERROR{color:rgba(255,255,255,0.35)}
+.ll .msg{color:rgba(255,255,255,0.62)}
+.cursor{animation:blink 1s step-end infinite;color:rgba(255,255,255,0.62)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
+/* Incidents */
+#inc-body{flex:1;overflow-y:auto;min-height:0}
+.inc-row{
+  display:grid;grid-template-columns:46px auto 1fr auto;
+  align-items:baseline;gap:8px;
+  padding:6px 0;border-bottom:.5px solid var(--border);
+}
+.inc-row:last-child{border-bottom:none}
+.inc-row.dim{opacity:.5}
+.inc-ts{font-size:11px;color:var(--muted);white-space:nowrap}
+.badge{
+  display:inline-block;padding:2px 8px;border-radius:4px;
+  font-size:11px;font-weight:500;white-space:nowrap;
+}
+.b-fail{background:var(--red-bg);color:var(--red-text)}
+.b-rec {background:var(--green-bg);color:var(--green-text)}
+.b-anom{background:var(--amber-bg);color:var(--amber-text)}
+.inc-desc{font-size:12px;color:var(--text);line-height:1.3}
+.inc-dur{font-size:11px;color:var(--muted);white-space:nowrap;text-align:right}
+
+/* ── Bottom row ──────────────────────────────────────────── */
+#bot{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);min-height:0}
+
+/* Slack */
+#sl-body{flex:1;overflow-y:auto;min-height:0}
+.sl-row{
+  display:flex;align-items:flex-start;gap:9px;
+  padding:7px 0;border-bottom:.5px solid var(--border);
+}
+.sl-row:last-child{border-bottom:none}
+.si{
+  width:22px;height:22px;background:#4A154B;border-radius:4px;
+  display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;margin-top:1px;
+}
+.sl-content{flex:1;min-width:0;font-size:12px;line-height:1.4}
+.sl-type{font-weight:600;margin-right:4px}
+.sl-type.FAILURE {color:var(--red)}
+.sl-type.RECOVERED{color:var(--green)}
+.sl-type.ANOMALY {color:var(--amber)}
+.sl-msg{color:rgba(255,255,255,0.68)}
+.sl-ts{color:var(--muted);font-size:11px;flex-shrink:0;padding-top:2px}
+
+/* SLO panel */
+#slo-panel{gap:8px}
+.slo-cards{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);flex-shrink:0}
+.slo-card{
+  background:var(--surface2);border-radius:8px;
+  padding:10px 12px;border:1px solid var(--border);
+}
+.slo-card-lbl{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:4px}
+.slo-card-val{font-size:20px;font-weight:500;line-height:1.1}
+.slo-card-sub{font-size:11px;color:var(--muted);margin-top:3px}
+.slo-bar-section{flex-shrink:0}
+.bar-track{height:6px;border-radius:999px;background:rgba(255,255,255,0.1);overflow:hidden}
+.bar-fill{height:100%;border-radius:999px;background:#639922;transition:width .5s ease;width:0%}
+.bar-labels{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:5px}
+.bar-labels .ctr{font-weight:500;color:var(--text)}
+.slo-note{font-size:11px;color:var(--muted);flex-shrink:0}
+.empty{color:var(--muted);font-size:12px;padding:14px 0;text-align:center}
+</style>
+</head>
+<body>
+<div id="root">
+
+  <!-- TOPBAR -->
+  <div id="topbar">
+    <div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="svc-name">target-api</span>
+        <span id="pill" class="pill ok">
+          <span class="dot"></span>
+          <span id="pill-txt">operational</span>
+        </span>
+      </div>
+      <div class="svc-host">ec2-54-211-38-92.compute-1.amazonaws.com &middot; us-east-1</div>
+    </div>
+    <div class="tb-right">
+      <div>last checked <strong id="t-ago">—</strong></div>
+      <div>uptime <strong id="t-up">—</strong></div>
+    </div>
+  </div>
+
+  <!-- CARDS -->
+  <div id="cards">
+    <div class="card">
+      <div class="card-lbl">Requests / Sec</div>
+      <div class="card-val c-green" id="v-rps">—</div>
+      <div class="card-sub" id="s-rps">—</div>
+    </div>
+    <div class="card">
+      <div class="card-lbl">Error Rate</div>
+      <div class="card-val" id="v-err">—</div>
+      <div class="card-sub">normal range &lt;2%</div>
+    </div>
+    <div class="card">
+      <div class="card-lbl">P95 Latency</div>
+      <div class="card-val" id="v-lat">—</div>
+      <div class="card-sub">slo target &lt;200ms</div>
+    </div>
+    <div class="card">
+      <div class="card-lbl">SLO Compliance</div>
+      <div class="card-val" id="v-slo">—</div>
+      <div class="card-sub">last 30 days</div>
+    </div>
+  </div>
+
+  <!-- CHARTS -->
+  <div id="charts">
+    <div class="panel">
+      <div class="panel-title">Request Rate — Last 60 Checks</div>
+      <div class="chart-wrap"><canvas id="rps-chart"></canvas></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Anomaly Detection — Error Rate</div>
+      <div class="chart-wrap"><canvas id="err-chart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- MID -->
+  <div id="mid">
+    <div class="panel" id="logs-panel">
+      <div class="panel-title">Docker Monitor Logs</div>
+      <div id="logs-body"><span style="color:rgba(255,255,255,0.18)">waiting for logs&hellip;</span></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Incident Timeline</div>
+      <div id="inc-body"><div class="empty">No incidents recorded</div></div>
+    </div>
+  </div>
+
+  <!-- BOTTOM -->
+  <div id="bot">
+    <div class="panel">
+      <div class="panel-title">Slack Alert Log</div>
+      <div id="sl-body"><div class="empty">No alerts sent</div></div>
+    </div>
+    <div class="panel" id="slo-panel">
+      <div class="panel-title">SLO Tracker — Recovery &lt;30s</div>
+      <div class="slo-cards">
+        <div class="slo-card">
+          <div class="slo-card-lbl">Total Incidents</div>
+          <div class="slo-card-val" id="slo-total">—</div>
+          <div class="slo-card-sub">last 30 days</div>
+        </div>
+        <div class="slo-card">
+          <div class="slo-card-lbl">Within SLO</div>
+          <div class="slo-card-val" id="slo-within">—</div>
+          <div class="slo-card-sub" id="slo-mttr">—</div>
+        </div>
+      </div>
+      <div class="slo-bar-section">
+        <div class="bar-track"><div class="bar-fill" id="slo-bar"></div></div>
+        <div class="bar-labels">
+          <span>0%</span>
+          <span class="ctr" id="slo-pct">—</span>
+          <span>100%</span>
+        </div>
+      </div>
+      <div class="slo-note" id="slo-note">—</div>
+    </div>
+  </div>
+
+</div><!-- #root -->
+<script>
+'use strict';
+
+const SLACK_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="white"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.52 2.528 2.528 0 0 1-2.522-2.52 2.528 2.528 0 0 1 2.522-2.522h2.52v2.522zm1.271 0a2.528 2.528 0 0 1 2.521-2.522 2.528 2.528 0 0 1 2.521 2.522v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zm10.122 2.521a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.268 0a2.528 2.528 0 0 1-2.523 2.521 2.528 2.528 0 0 1-2.52-2.521V2.522A2.528 2.528 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zm-2.523 10.122a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.528 2.528 0 0 1-2.52-2.522v-2.522h2.52zm0-1.268a2.528 2.528 0 0 1-2.52-2.523 2.528 2.528 0 0 1 2.52-2.52h6.313A2.528 2.528 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/></svg>`;
+
+// ── Rolling data buffers ─────────────────────────────────────────────────
+const rpsBuf    = Array(60).fill(null);
+const errBuf    = Array(60).fill(null);
+const bandCeil  = Array(60).fill(2);   // normal band ceiling: 2%
+const bandFloor = Array(60).fill(0);
+
+let lastStatusAt  = null;
+let liveUptime    = null;   // incremented each second
+let prevRpsBaseline = null;
+
+// ── Chart setup ─────────────────────────────────────────────────────────
+const GRID_COLOR = 'rgba(128,128,128,0.1)';
+const TICK_STYLE = { color: 'rgba(255,255,255,0.27)', font: { size: 10 } };
+const Y_AXIS = {
+  grid: { color: GRID_COLOR },
+  ticks: TICK_STYLE,
+  border: { display: false },
+};
+const CHART_OPTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: false,
+  plugins: { legend: { display: false } },
+};
+
+const rpsChart = new Chart(document.getElementById('rps-chart'), {
+  type: 'line',
+  data: {
+    labels: Array(60).fill(''),
+    datasets: [{
+      data: rpsBuf.slice(),
+      borderColor: '#185FA5',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.4,
+      fill: false,
+      spanGaps: true,
+    }]
+  },
+  options: {
+    ...CHART_OPTS,
+    scales: { x: { display: false }, y: Y_AXIS }
+  }
+});
+
+const errChart = new Chart(document.getElementById('err-chart'), {
+  type: 'line',
+  data: {
+    labels: Array(60).fill(''),
+    datasets: [
+      {
+        // Upper band — fills down to dataset index 1 (floor)
+        data: bandCeil.slice(),
+        borderWidth: 0,
+        pointRadius: 0,
+        tension: 0,
+        fill: { target: 1, above: 'rgba(99,153,34,0.13)', below: 'transparent' },
+        spanGaps: true,
+      },
+      {
+        // Lower band floor at 0
+        data: bandFloor.slice(),
+        borderWidth: 0,
+        pointRadius: 0,
+        tension: 0,
+        fill: false,
+        spanGaps: true,
+      },
+      {
+        // Live error rate line
+        data: errBuf.slice(),
+        borderColor: '#185FA5',
+        borderWidth: 1.5,
+        tension: 0.35,
+        fill: false,
+        spanGaps: true,
+        pointRadius(ctx) {
+          const v = ctx.parsed ? ctx.parsed.y : null;
+          return v !== null && v > bandCeil[ctx.dataIndex] ? 4 : 0;
+        },
+        pointBackgroundColor(ctx) {
+          const v = ctx.parsed ? ctx.parsed.y : null;
+          return v !== null && v > bandCeil[ctx.dataIndex] ? '#E24B4A' : 'transparent';
+        },
+        pointBorderWidth: 0,
+      }
+    ]
+  },
+  options: {
+    ...CHART_OPTS,
+    scales: {
+      x: { display: false },
+      y: { ...Y_AXIS, min: 0 }
+    }
+  }
+});
+
+// ── Utility ──────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fmtUptime(s) {
+  if (s == null) return '—';
+  return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+}
+function fmtAgo(ms) {
+  if (!ms) return '—';
+  return Math.floor((Date.now() - ms) / 1000) + 's ago';
+}
+
+// Generate plausible simulated metrics (real Prometheus data could replace these)
+function nextRps(ok) {
+  const v = ok ? parseFloat((8 + Math.random() * 7).toFixed(1)) : 0;
+  rpsBuf.shift(); rpsBuf.push(v);
+  return v;
+}
+function nextErr(ok) {
+  const v = ok
+    ? parseFloat((Math.random() * 1.7).toFixed(2))
+    : parseFloat((4.5 + Math.random() * 5.5).toFixed(2));
+  errBuf.shift(); errBuf.push(v);
+  return v;
+}
+
+// ── Status update ─────────────────────────────────────────────────────────
+function applyStatus(d) {
+  lastStatusAt = Date.now();
+  liveUptime   = d.uptime_seconds ?? 0;
+
+  const ok = d.status === 'ok';
+
+  // Topbar pill
+  const pill = document.getElementById('pill');
+  pill.className = 'pill ' + (ok ? 'ok' : 'fail');
+  document.getElementById('pill-txt').textContent = ok ? 'operational' : 'degraded';
+
+  // RPS
+  const rps = nextRps(ok);
+  const rpsEl = document.getElementById('v-rps');
+  rpsEl.textContent = rps.toFixed(1);
+  rpsEl.className = 'card-val ' + (ok ? 'c-green' : 'c-red');
+  if (prevRpsBaseline === null) prevRpsBaseline = rps;
+  const delta = rps - prevRpsBaseline;
+  document.getElementById('s-rps').textContent = ok
+    ? (delta >= 0 ? '↑' : '↓') + ' from ' + prevRpsBaseline.toFixed(1) + ' baseline'
+    : 'service down';
+  prevRpsBaseline = rps;
+
+  // Error rate
+  const err = nextErr(ok);
+  const errEl = document.getElementById('v-err');
+  errEl.textContent = err.toFixed(1) + '%';
+  errEl.className = 'card-val' + (err >= 5 ? ' c-red' : err >= 2 ? ' c-amber' : '');
+
+  // Latency
+  const lat = ok ? Math.floor(28 + Math.random() * 44) : null;
+  document.getElementById('v-lat').textContent = lat !== null ? lat + 'ms' : '—';
+
+  // SLO card
+  const incidents = d.incidents || [];
+  const total = incidents.length;
+  const within = incidents.filter(i => i.resolved && (i.duration_seconds == null || i.duration_seconds <= 30)).length;
+  const pct = total > 0 ? (within / total * 100) : 100;
+  document.getElementById('v-slo').textContent = pct.toFixed(1) + '%';
+
+  // Push to charts
+  rpsChart.data.datasets[0].data = rpsBuf.slice();
+  rpsChart.update('none');
+
+  errChart.data.datasets[0].data = bandCeil.slice();
+  errChart.data.datasets[1].data = bandFloor.slice();
+  errChart.data.datasets[2].data = errBuf.slice();
+  errChart.update('none');
+
+  // Sub-panels
+  renderIncidents(incidents);
+  renderSlack(d.slack_alerts || []);
+  renderSloTracker(incidents);
+}
+
+// ── Incidents panel ───────────────────────────────────────────────────────
+function renderIncidents(incidents) {
+  const el = document.getElementById('inc-body');
+  if (!incidents.length) {
+    el.innerHTML = '<div class="empty">No incidents recorded</div>';
+    return;
+  }
+  const sorted = [...incidents].sort((a, b) => b.id - a.id);
+  el.innerHTML = sorted.map((inc, i) => {
+    const type = inc.resolved ? 'recovered' : (inc.type === 'anomaly' ? 'anomaly' : 'failure');
+    const cls  = type === 'recovered' ? 'b-rec' : type === 'anomaly' ? 'b-anom' : 'b-fail';
+    const ts   = (inc.timestamp || '').slice(11, 16) || '—';
+    const dur  = inc.duration_seconds != null ? inc.duration_seconds + 's' : '—';
+    return `<div class="inc-row${i >= 3 ? ' dim' : ''}">
+      <span class="inc-ts">${esc(ts)}</span>
+      <span class="badge ${cls}">${type}</span>
+      <span class="inc-desc">${esc(inc.description)}</span>
+      <span class="inc-dur">${esc(dur)}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── Slack panel ───────────────────────────────────────────────────────────
+function renderSlack(alerts) {
+  const el = document.getElementById('sl-body');
+  if (!alerts.length) {
+    el.innerHTML = '<div class="empty">No alerts sent</div>';
+    return;
+  }
+  const sorted = [...alerts].sort((a, b) => b.id - a.id);
+  el.innerHTML = sorted.map(a => {
+    const ts  = (a.timestamp || '').slice(11, 16) || '—';
+    const msg = esc(a.message.replace(/:\w+:/g, '').replace(/\*([^*]+)\*/g, '$1').trim());
+    const tc  = ['FAILURE','RECOVERED','ANOMALY'].includes(a.type) ? a.type : 'ANOMALY';
+    return `<div class="sl-row">
+      <div class="si">${SLACK_SVG}</div>
+      <div class="sl-content">
+        <span class="sl-type ${tc}">[${esc(a.type)}]</span><span class="sl-msg">${msg}</span>
+      </div>
+      <span class="sl-ts">${esc(ts)}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── SLO tracker ───────────────────────────────────────────────────────────
+function renderSloTracker(incidents) {
+  const total   = incidents.length;
+  const within  = incidents.filter(i => i.resolved && (i.duration_seconds == null || i.duration_seconds <= 30)).length;
+  const pct     = total > 0 ? (within / total * 100) : 100;
+  const resolved = incidents.filter(i => i.resolved);
+  const avgMttr  = resolved.length
+    ? Math.round(resolved.reduce((s, i) => s + (i.duration_seconds || 0), 0) / resolved.length)
+    : null;
+
+  document.getElementById('slo-total').textContent  = total || '0';
+  document.getElementById('slo-within').textContent = total > 0 ? `${within} / ${total}` : '—';
+  document.getElementById('slo-mttr').textContent   = avgMttr != null ? `avg mttr ${avgMttr}s` : 'no resolved incidents';
+  document.getElementById('slo-bar').style.width    = pct.toFixed(1) + '%';
+  document.getElementById('slo-pct').textContent    = pct.toFixed(1) + '% compliant';
+
+  const breaches = incidents.filter(i => i.resolved && i.duration_seconds > 30);
+  let note;
+  if (breaches.length) {
+    const b = breaches[0];
+    const d = (b.timestamp || '').slice(0, 10) || 'unknown date';
+    note = `${breaches.length} breach${breaches.length > 1 ? 'es' : ''} — container restart on ${d} · ${b.duration_seconds}s recovery`;
+  } else if (total > 0) {
+    note = 'All incidents resolved within SLO target';
+  } else {
+    note = 'No incidents in reporting period';
+  }
+  document.getElementById('slo-note').textContent = note;
+}
+
+// ── Logs panel ────────────────────────────────────────────────────────────
+function applyLogs(d) {
+  const body  = document.getElementById('logs-body');
+  const lines = d.lines || [];
+  if (!lines.length) {
+    body.innerHTML = '<span style="color:rgba(255,255,255,0.18)">waiting for monitor logs&hellip;</span>';
+    return;
+  }
+  body.innerHTML = lines.map((l, i) => {
+    const isLast = i === lines.length - 1;
+    const lvCls  = 'lv-' + (l.level || 'MONITOR');
+    return `<span class="ll"><span class="ts">${esc(l.timestamp)}</span> <span class="${lvCls}">[${esc(l.level)}]</span> <span class="msg">${esc(l.message)}${isLast ? '<span class="cursor">█</span>' : ''}</span></span>`;
+  }).join('');
+  body.scrollTop = body.scrollHeight;
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status');
+    if (!r.ok) throw 0;
+    applyStatus(await r.json());
+  } catch { /* keep stale display */ }
+}
+
+async function pollLogs() {
+  try {
+    const r = await fetch('/api/logs');
+    if (!r.ok) throw 0;
+    applyLogs(await r.json());
+  } catch { /* keep stale display */ }
+}
+
+// Topbar counters tick every second
+setInterval(() => {
+  document.getElementById('t-ago').textContent = fmtAgo(lastStatusAt);
+  if (liveUptime != null) {
+    liveUptime++;
+    document.getElementById('t-up').textContent = fmtUptime(liveUptime);
+  }
+}, 1000);
+
+pollStatus();
+pollLogs();
+setInterval(pollStatus, 5000);
+setInterval(pollLogs,   3000);
+</script>
+</body>
+</html>
