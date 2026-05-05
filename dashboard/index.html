@@ -117,7 +117,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
 
 /* Incidents */
-#inc-body{flex:1;overflow-y:auto;min-height:0}
+#inc-body{flex:1;overflow-y:auto;min-height:0;padding-right:8px}
+#inc-body::-webkit-scrollbar{width:3px}
+#inc-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:2px}
 .inc-row{
   display:grid;grid-template-columns:46px auto 1fr auto;
   align-items:baseline;gap:8px;
@@ -140,7 +142,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 #bot{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);min-height:0}
 
 /* Slack */
-#sl-body{flex:1;overflow-y:auto;min-height:0}
+#sl-body{flex:1;overflow-y:auto;min-height:0;padding-right:8px}
+#sl-body::-webkit-scrollbar{width:3px}
+#sl-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:2px}
 .sl-row{
   display:flex;align-items:flex-start;gap:9px;
   padding:7px 0;border-bottom:.5px solid var(--border);
@@ -209,7 +213,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
     <div class="card">
       <div class="card-lbl">Error Rate</div>
       <div class="card-val" id="v-err">—</div>
-      <div class="card-sub">normal range &lt;2%</div>
+      <div class="card-sub">downtime in last 5m</div>
     </div>
     <div class="card">
       <div class="card-lbl">P95 Latency</div>
@@ -291,9 +295,10 @@ const errBuf    = Array(60).fill(null);
 const bandCeil  = Array(60).fill(2);   // normal band ceiling: 2%
 const bandFloor = Array(60).fill(0);
 
-let lastStatusAt  = null;
-let liveUptime    = null;   // incremented each second
+let lastStatusAt    = null;
+let liveUptime      = null;
 let prevRpsBaseline = null;
+let buffersSeeded   = false;
 
 // ── Chart setup ─────────────────────────────────────────────────────────
 const GRID_COLOR = 'rgba(128,128,128,0.1)';
@@ -396,24 +401,40 @@ function fmtAgo(ms) {
   return Math.floor((Date.now() - ms) / 1000) + 's ago';
 }
 
-// Generate plausible simulated metrics (real Prometheus data could replace these)
-function nextRps(ok) {
-  const v = ok ? parseFloat((8 + Math.random() * 7).toFixed(1)) : 0;
-  rpsBuf.shift(); rpsBuf.push(v);
-  return v;
-}
-function nextErr(ok) {
-  const v = ok
-    ? parseFloat((Math.random() * 1.7).toFixed(2))
-    : parseFloat((4.5 + Math.random() * 5.5).toFixed(2));
-  errBuf.shift(); errBuf.push(v);
-  return v;
+function pushRps(v) { rpsBuf.shift(); rpsBuf.push(v); return v; }
+function pushErr(v) { errBuf.shift(); errBuf.push(v); return v; }
+
+// Convert a UTC ISO timestamp or HH:MM:SS string to Toronto local time (HH:MM)
+function toEastern(ts) {
+  if (!ts) return '—';
+  // Already a bare HH:MM or HH:MM:SS from the log parser — return as-is (monitor TZ is now Toronto)
+  if (/^\d{2}:\d{2}(:\d{2})?$/.test(ts)) return ts.slice(0, 5);
+  const d = new Date(ts);
+  if (isNaN(d)) return ts.slice(11, 16) || '—';
+  return d.toLocaleTimeString('en-CA', {
+    timeZone: 'America/Toronto',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
 }
 
 // ── Status update ─────────────────────────────────────────────────────────
 function applyStatus(d) {
   lastStatusAt = Date.now();
   liveUptime   = d.uptime_seconds ?? 0;
+
+  // Pre-fill rolling buffers from DB history on first successful response
+  if (!buffersSeeded && d.metrics_history && d.metrics_history.length > 0) {
+    const hist = d.metrics_history;
+    const n = Math.min(hist.length, 60);
+    const offset = 60 - n;
+    for (let i = 0; i < n; i++) {
+      rpsBuf[offset + i] = typeof hist[i].rps === 'number' ? hist[i].rps : null;
+      errBuf[offset + i] = typeof hist[i].error_rate_pct === 'number' ? hist[i].error_rate_pct : null;
+    }
+    buffersSeeded = true;
+  }
 
   const ok = d.status === 'ok';
 
@@ -422,27 +443,27 @@ function applyStatus(d) {
   pill.className = 'pill ' + (ok ? 'ok' : 'fail');
   document.getElementById('pill-txt').textContent = ok ? 'operational' : 'degraded';
 
-  // RPS
-  const rps = nextRps(ok);
+  // RPS — from Prometheus via /api/status
+  const rps = pushRps(typeof d.rps === 'number' ? d.rps : 0);
   const rpsEl = document.getElementById('v-rps');
-  rpsEl.textContent = rps.toFixed(1);
+  rpsEl.textContent = rps.toFixed(2);
   rpsEl.className = 'card-val ' + (ok ? 'c-green' : 'c-red');
   if (prevRpsBaseline === null) prevRpsBaseline = rps;
   const delta = rps - prevRpsBaseline;
   document.getElementById('s-rps').textContent = ok
-    ? (delta >= 0 ? '↑' : '↓') + ' from ' + prevRpsBaseline.toFixed(1) + ' baseline'
+    ? (delta >= 0 ? '↑' : '↓') + ' from ' + prevRpsBaseline.toFixed(2) + ' baseline'
     : 'service down';
   prevRpsBaseline = rps;
 
-  // Error rate
-  const err = nextErr(ok);
+  // Error rate — from Prometheus via /api/status
+  const err = pushErr(typeof d.error_rate_pct === 'number' ? d.error_rate_pct : 0);
   const errEl = document.getElementById('v-err');
-  errEl.textContent = err.toFixed(1) + '%';
+  errEl.textContent = err.toFixed(2) + '%';
   errEl.className = 'card-val' + (err >= 5 ? ' c-red' : err >= 2 ? ' c-amber' : '');
 
-  // Latency
-  const lat = ok ? Math.floor(28 + Math.random() * 44) : null;
-  document.getElementById('v-lat').textContent = lat !== null ? lat + 'ms' : '—';
+  // P95 latency — from Prometheus via /api/status
+  const lat = typeof d.p95_latency_ms === 'number' && d.p95_latency_ms > 0 ? d.p95_latency_ms : null;
+  document.getElementById('v-lat').textContent = lat !== null ? Math.round(lat) + 'ms' : '—';
 
   // SLO card
   const incidents = d.incidents || [];
@@ -477,7 +498,7 @@ function renderIncidents(incidents) {
   el.innerHTML = sorted.map((inc, i) => {
     const type = inc.resolved ? 'recovered' : (inc.type === 'anomaly' ? 'anomaly' : 'failure');
     const cls  = type === 'recovered' ? 'b-rec' : type === 'anomaly' ? 'b-anom' : 'b-fail';
-    const ts   = (inc.timestamp || '').slice(11, 16) || '—';
+    const ts   = toEastern(inc.timestamp);
     const dur  = inc.duration_seconds != null ? inc.duration_seconds + 's' : '—';
     return `<div class="inc-row${i >= 3 ? ' dim' : ''}">
       <span class="inc-ts">${esc(ts)}</span>
@@ -497,7 +518,7 @@ function renderSlack(alerts) {
   }
   const sorted = [...alerts].sort((a, b) => b.id - a.id);
   el.innerHTML = sorted.map(a => {
-    const ts  = (a.timestamp || '').slice(11, 16) || '—';
+    const ts  = toEastern(a.timestamp);
     const msg = esc(a.message.replace(/:\w+:/g, '').replace(/\*([^*]+)\*/g, '$1').trim());
     const tc  = ['FAILURE','RECOVERED','ANOMALY'].includes(a.type) ? a.type : 'ANOMALY';
     return `<div class="sl-row">
