@@ -4,6 +4,9 @@ services:
     container_name: target-api
     ports:
       - "8000:8000"
+    volumes:
+      - ./data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
 
   monitor:
     build: ./monitor
@@ -14,6 +17,7 @@ services:
       - SLACK_WEBHOOK=${SLACK_WEBHOOK}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
     depends_on:
       - target-api
     restart: always

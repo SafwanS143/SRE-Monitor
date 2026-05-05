@@ -5,3 +5,4 @@
 *.tfvars
 .env
 ~/.ssh/sre_key
+data/*.db
