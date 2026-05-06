@@ -182,17 +182,17 @@ def api_status():
     uptime_seconds = int((datetime.datetime.utcnow() - APP_START).total_seconds())
 
     # Prometheus: RPS, latency, and real-time HTTP error rate
-    rps_raw = prom_query('sum(rate(http_requests_total{handler="/health"}[30s]))')
+    rps_raw = prom_query('sum(rate(http_requests_total{handler="/health"}[15s]))')
     p95_raw = prom_query(
-        'histogram_quantile(0.95, sum by(le) (rate(http_request_duration_seconds_bucket[1m]))) * 1000'
+        'histogram_quantile(0.95, sum by(le) (rate(http_request_duration_seconds_bucket[15s]))) * 1000'
     )
     p95_latency_ms = round(p95_raw, 1) if p95_raw > 0 else 0.0
 
     # Real-time 5xx rate from Prometheus — used for status, not the incident DB.
     # The incident DB lags (requires 3 consecutive failures) so it misses probabilistic degradation.
     http_5xx_pct = prom_query(
-        'rate(http_requests_total{handler="/health",status="500"}[30s])'
-        ' / rate(http_requests_total{handler="/health"}[30s]) * 100'
+        'rate(http_requests_total{handler="/health",status="500"}[15s])'
+        ' / rate(http_requests_total{handler="/health"}[15s]) * 100'
     )
     if http_5xx_pct >= 50.0:
         derived_status = "unhealthy"

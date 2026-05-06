@@ -61,14 +61,14 @@ def main():
         for i in range(total_samples):
             ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-            rps = prom_query('sum(rate(http_requests_total{handler="/health"}[30s]))')
+            rps = prom_query('sum(rate(http_requests_total{handler="/health"}[15s]))')
             error_rate = prom_query(
-                'rate(http_requests_total{handler="/health",status="500"}[30s])'
-                ' / rate(http_requests_total{handler="/health"}[30s]) * 100'
+                'rate(http_requests_total{handler="/health",status="500"}[15s])'
+                ' / rate(http_requests_total{handler="/health"}[15s]) * 100'
             )
             latency = prom_query(
                 'histogram_quantile(0.95, sum by(le)'
-                ' (rate(http_request_duration_seconds_bucket[1m]))) * 1000'
+                ' (rate(http_request_duration_seconds_bucket[15s]))) * 1000'
             )
 
             writer.writerow([ts, round(rps, 4), round(error_rate, 4), round(latency, 4)])
