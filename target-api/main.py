@@ -182,7 +182,7 @@ def api_status():
     uptime_seconds = int((datetime.datetime.utcnow() - APP_START).total_seconds())
 
     # Prometheus: RPS, latency, and real-time HTTP error rate
-    rps_raw = prom_query('sum(rate(http_requests_total{handler="/health"}[1m]))')
+    rps_raw = prom_query('sum(rate(http_requests_total{handler="/health"}[30s]))')
     p95_raw = prom_query(
         'histogram_quantile(0.95, sum by(le) (rate(http_request_duration_seconds_bucket[1m]))) * 1000'
     )

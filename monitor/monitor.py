@@ -159,7 +159,7 @@ def prom_query(promql: str) -> float:
 
 
 def fetch_metrics():
-    rps = prom_query('sum(rate(http_requests_total{handler="/health"}[1m]))')
+    rps = prom_query('sum(rate(http_requests_total{handler="/health"}[30s]))')
     error_rate = prom_query(
         'rate(http_requests_total{handler="/health",status="500"}[30s])'
         ' / rate(http_requests_total{handler="/health"}[30s]) * 100'
