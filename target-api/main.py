@@ -7,6 +7,9 @@ import sqlite3
 import datetime
 import os
 import re
+import random
+import threading
+import time as time_module
 import logging
 import docker
 import requests as http
@@ -27,7 +30,7 @@ app.add_middleware(
 )
 
 Instrumentator().add(metrics.requests()).add(metrics.latency()).instrument(app).expose(app)
-healthy = True
+degradation_level = 0.0
 
 _docker_client = docker.from_env()
 
@@ -35,19 +38,33 @@ _docker_client = docker.from_env()
 def _ensure_sample_table():
     try:
         con = sqlite3.connect(DB_PATH)
-        con.execute("""
+        con.executescript("""
             CREATE TABLE IF NOT EXISTS metric_samples (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                rps REAL DEFAULT 0,
-                error_rate_pct REAL DEFAULT 0,
-                p95_latency_ms REAL DEFAULT 0
-            )
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp      TEXT    NOT NULL,
+                rps            REAL    DEFAULT 0,
+                error_rate_pct REAL    DEFAULT 0,
+                p95_latency_ms REAL    DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS anomaly_scores (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp      TEXT    NOT NULL,
+                rps            REAL,
+                error_rate     REAL,
+                p95_latency_ms REAL,
+                score          REAL,
+                is_anomaly     INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS baseline_stats (
+                metric TEXT PRIMARY KEY,
+                mean   REAL,
+                std    REAL
+            );
         """)
         con.commit()
         con.close()
     except Exception as exc:
-        log.error("Failed to create metric_samples table: %s", exc)
+        log.error("Failed to ensure DB tables: %s", exc)
 
 _ensure_sample_table()
 
@@ -126,22 +143,37 @@ def _parse_log_line(raw: str):
 
 @app.get("/health")
 def health():
-    if healthy:
-        return {"status": "ok"}
-    return JSONResponse(content={"status": "unhealthy"}, status_code=500)
+    if random.random() < degradation_level:
+        return JSONResponse(content={"status": "unhealthy"}, status_code=500)
+    return {"status": "ok"}
 
 
 @app.post("/chaos")
 def chaos():
-    global healthy
-    healthy = False
+    global degradation_level
+    degradation_level = 1.0
     return {"message": "chaos triggered — /health now returns 500"}
+
+
+def _run_degradation():
+    global degradation_level
+    for _ in range(4):
+        time_module.sleep(2)
+        degradation_level = min(degradation_level + 0.25, 1.0)
+
+
+@app.post("/chaos-slow")
+def chaos_slow():
+    global degradation_level
+    degradation_level = 0.0
+    threading.Thread(target=_run_degradation, daemon=True).start()
+    return {"message": "slow degradation started — degradation_level reaches 1.0 over ~8s"}
 
 
 @app.post("/recover")
 def recover():
-    global healthy
-    healthy = True
+    global degradation_level
+    degradation_level = 0.0
     return {"message": "recovered — /health now returns 200"}
 
 
@@ -149,19 +181,35 @@ def recover():
 def api_status():
     uptime_seconds = int((datetime.datetime.utcnow() - APP_START).total_seconds())
 
-    # Prometheus: RPS and latency — reliable regardless of restarts
+    # Prometheus: RPS, latency, and real-time HTTP error rate
     rps_raw = prom_query('sum(rate(http_requests_total{handler="/health"}[1m]))')
     p95_raw = prom_query(
         'histogram_quantile(0.95, sum by(le) (rate(http_request_duration_seconds_bucket[1m]))) * 1000'
     )
     p95_latency_ms = round(p95_raw, 1) if p95_raw > 0 else 0.0
 
-    # Error rate is computed from the incident DB after incidents are loaded below.
-    # Prometheus counters reset on container restart so they miss brief outages.
+    # Real-time 5xx rate from Prometheus — used for status, not the incident DB.
+    # The incident DB lags (requires 3 consecutive failures) so it misses probabilistic degradation.
+    http_5xx_pct = prom_query(
+        'rate(http_requests_total{handler="/health",status="500"}[30s])'
+        ' / rate(http_requests_total{handler="/health"}[30s]) * 100'
+    )
+    if http_5xx_pct >= 50.0:
+        derived_status = "unhealthy"
+    elif http_5xx_pct >= 1.0:
+        derived_status = "degrading"
+    else:
+        derived_status = "ok"
+
+    # Incident-based error rate is kept for the chart history (captures brief full outages
+    # that reset Prometheus counters on container restart).
 
     incidents = []
     slack_alerts = []
     metrics_history = []
+    anomaly_timeseries = []
+    anomaly_events = []
+    baseline_stats = None
     try:
         con = sqlite3.connect(DB_PATH)
         cur = con.cursor()
@@ -210,6 +258,45 @@ def api_status():
                 "message": row[2],
                 "timestamp": row[3],
             })
+
+        # Anomaly timeseries — last 60 scoring events for the chart (oldest first)
+        cur.execute(
+            "SELECT timestamp, rps, error_rate, p95_latency_ms, score, is_anomaly "
+            "FROM anomaly_scores ORDER BY id DESC LIMIT 60"
+        )
+        anomaly_timeseries = [
+            {
+                "timestamp":      r[0],
+                "rps":            r[1],
+                "error_rate":     r[2],
+                "p95_latency_ms": r[3],
+                "score":          r[4],
+                "is_anomaly":     bool(r[5]),
+            }
+            for r in reversed(cur.fetchall())
+        ]
+
+        # Anomaly events — last 20 confirmed anomalies for the event feed (newest first)
+        cur.execute(
+            "SELECT timestamp, rps, error_rate, p95_latency_ms, score "
+            "FROM anomaly_scores WHERE is_anomaly=1 ORDER BY id DESC LIMIT 20"
+        )
+        anomaly_events = [
+            {
+                "timestamp":      r[0],
+                "rps":            r[1],
+                "error_rate":     r[2],
+                "p95_latency_ms": r[3],
+                "score":          r[4],
+            }
+            for r in cur.fetchall()
+        ]
+
+        # Baseline stats for normal-band rendering in the dashboard
+        cur.execute("SELECT metric, mean, std FROM baseline_stats")
+        rows = cur.fetchall()
+        baseline_stats = {r[0]: {"mean": r[1], "std": r[2]} for r in rows} if rows else None
+
         # Compute error rate from incident downtime in last 5 minutes
         # (more reliable than Prometheus for brief outages that reset counters on restart)
         now_dt = datetime.datetime.utcnow()
@@ -243,7 +330,7 @@ def api_status():
         log.error("DB error in api_status: %s", exc)
         error_rate_pct = 0.0
     return {
-        "status": "ok" if healthy else "unhealthy",
+        "status": derived_status,
         "uptime_seconds": uptime_seconds,
         "rps": round(rps_raw, 2),
         "error_rate_pct": error_rate_pct,
@@ -251,6 +338,9 @@ def api_status():
         "metrics_history": metrics_history,
         "incidents": incidents,
         "slack_alerts": slack_alerts,
+        "anomaly_timeseries": anomaly_timeseries,
+        "anomaly_events": anomaly_events,
+        "baseline_stats": baseline_stats,
     }
 
 

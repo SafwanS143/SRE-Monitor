@@ -55,10 +55,12 @@ html,body{height:100%;background:var(--bg);color:var(--text);
   padding:3px 10px 3px 8px;border-radius:999px;
   font-size:12px;font-weight:500;white-space:nowrap;
 }
-.pill.ok {background:var(--green-bg);color:var(--green-text)}
-.pill.fail{background:var(--red-bg);color:var(--red-text)}
+.pill.ok   {background:var(--green-bg);color:var(--green-text)}
+.pill.warn {background:var(--amber-bg);color:var(--amber-text)}
+.pill.fail {background:var(--red-bg);color:var(--red-text)}
 .dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}
 .pill.ok   .dot{background:var(--green-text);animation:pulse 1s step-end infinite}
+.pill.warn .dot{background:var(--amber-text);animation:pulse 1s step-end infinite}
 .pill.fail .dot{background:var(--red-text)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
 .tb-right{margin-left:auto;font-size:12px;color:var(--muted);text-align:right;line-height:1.7}
@@ -138,7 +140,18 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 .inc-dur{font-size:11px;color:var(--muted);white-space:nowrap;text-align:right}
 
 /* ── Bottom row ──────────────────────────────────────────── */
-#bot{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);min-height:0}
+#bot{display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--gap);min-height:0}
+
+/* Anomaly event feed */
+#anom-body{flex:1;overflow-y:auto;min-height:0;padding-right:8px}
+#anom-body::-webkit-scrollbar{width:3px}
+#anom-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:2px}
+.anom-row{padding:7px 0;border-bottom:.5px solid var(--border)}
+.anom-row:last-child{border-bottom:none}
+.anom-hdr{display:flex;justify-content:space-between;margin-bottom:2px}
+.anom-score{font-size:11px;color:var(--amber-text);font-weight:500}
+.anom-ts{font-size:11px;color:var(--muted)}
+.anom-metrics{font-size:12px;color:rgba(255,255,255,0.55)}
 
 /* Slack */
 #sl-body{flex:1;overflow-y:auto;min-height:0;padding-right:8px}
@@ -280,6 +293,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);
       </div>
       <div class="slo-note" id="slo-note">—</div>
     </div>
+    <div class="panel">
+      <div class="panel-title">Anomaly Events</div>
+      <div id="anom-body"><div class="empty">No anomalies detected</div></div>
+    </div>
   </div>
 
 </div><!-- #root -->
@@ -291,8 +308,7 @@ const SLACK_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="white">
 // ── Rolling data buffers ─────────────────────────────────────────────────
 const rpsBuf    = Array(60).fill(null);
 const errBuf    = Array(60).fill(null);
-const bandCeil  = Array(60).fill(2);   // normal band ceiling: 2%
-const bandFloor = Array(60).fill(0);
+const isAnomBuf = Array(60).fill(false);  // anomaly flags for errChart red dots
 
 let lastStatusAt    = null;
 let liveUptime      = null;
@@ -340,8 +356,8 @@ const errChart = new Chart(document.getElementById('err-chart'), {
     labels: Array(60).fill(''),
     datasets: [
       {
-        // Upper band — fills down to dataset index 1 (floor)
-        data: bandCeil.slice(),
+        // Upper band — fills down to dataset index 1 (floor); updated from baseline_stats
+        data: Array(60).fill(0),
         borderWidth: 0,
         pointRadius: 0,
         tension: 0,
@@ -349,8 +365,8 @@ const errChart = new Chart(document.getElementById('err-chart'), {
         spanGaps: true,
       },
       {
-        // Lower band floor at 0
-        data: bandFloor.slice(),
+        // Lower band floor; updated from baseline_stats
+        data: Array(60).fill(0),
         borderWidth: 0,
         pointRadius: 0,
         tension: 0,
@@ -358,20 +374,18 @@ const errChart = new Chart(document.getElementById('err-chart'), {
         spanGaps: true,
       },
       {
-        // Live error rate line
-        data: errBuf.slice(),
+        // Prometheus error rate line; red dot on confirmed anomaly points
+        data: Array(60).fill(null),
         borderColor: '#185FA5',
         borderWidth: 1.5,
         tension: 0.35,
         fill: false,
         spanGaps: true,
         pointRadius(ctx) {
-          const v = ctx.parsed ? ctx.parsed.y : null;
-          return v !== null && v > bandCeil[ctx.dataIndex] ? 4 : 0;
+          return isAnomBuf[ctx.dataIndex] ? 4 : 0;
         },
         pointBackgroundColor(ctx) {
-          const v = ctx.parsed ? ctx.parsed.y : null;
-          return v !== null && v > bandCeil[ctx.dataIndex] ? '#E24B4A' : 'transparent';
+          return isAnomBuf[ctx.dataIndex] ? '#E24B4A' : 'transparent';
         },
         pointBorderWidth: 0,
       }
@@ -436,22 +450,23 @@ function applyStatus(d) {
   }
 
   const ok = d.status === 'ok';
+  const degrading = d.status === 'degrading';
 
   // Topbar pill
   const pill = document.getElementById('pill');
-  pill.className = 'pill ' + (ok ? 'ok' : 'fail');
-  document.getElementById('pill-txt').textContent = ok ? 'operational' : 'degraded';
+  pill.className = 'pill ' + (ok ? 'ok' : degrading ? 'warn' : 'fail');
+  document.getElementById('pill-txt').textContent = ok ? 'operational' : degrading ? 'degraded performance' : 'outage';
 
   // RPS — from Prometheus via /api/status
   const rps = pushRps(typeof d.rps === 'number' ? d.rps : 0);
   const rpsEl = document.getElementById('v-rps');
   rpsEl.textContent = rps.toFixed(2);
-  rpsEl.className = 'card-val ' + (ok ? 'c-green' : 'c-red');
+  rpsEl.className = 'card-val ' + (ok ? 'c-green' : degrading ? 'c-amber' : 'c-red');
   if (prevRpsBaseline === null) prevRpsBaseline = rps;
   const delta = rps - prevRpsBaseline;
   document.getElementById('s-rps').textContent = ok
     ? (delta >= 0 ? '↑' : '↓') + ' from ' + prevRpsBaseline.toFixed(2) + ' baseline'
-    : 'service down';
+    : degrading ? 'partial failures' : 'service down';
   prevRpsBaseline = rps;
 
   // Error rate — from Prometheus via /api/status
@@ -475,15 +490,19 @@ function applyStatus(d) {
   rpsChart.data.datasets[0].data = rpsBuf.slice();
   rpsChart.update('none');
 
-  errChart.data.datasets[0].data = bandCeil.slice();
-  errChart.data.datasets[1].data = bandFloor.slice();
-  errChart.data.datasets[2].data = errBuf.slice();
-  errChart.update('none');
+  if (d.anomaly_timeseries && d.anomaly_timeseries.length > 0) {
+    updateAnomalyChart(d.anomaly_timeseries, d.baseline_stats);
+  } else {
+    // anomaly detection disabled — show incident-based error rate as fallback
+    errChart.data.datasets[2].data = errBuf.slice();
+    errChart.update('none');
+  }
 
   // Sub-panels
   renderIncidents(incidents);
   renderSlack(d.slack_alerts || []);
   renderSloTracker(incidents);
+  renderAnomalyEvents(d.anomaly_events || []);
 }
 
 // ── Incidents panel ───────────────────────────────────────────────────────
@@ -559,6 +578,51 @@ function renderSloTracker(incidents) {
     note = 'No incidents in reporting period';
   }
   document.getElementById('slo-note').textContent = note;
+}
+
+// ── Anomaly chart update ──────────────────────────────────────────────────
+function updateAnomalyChart(timeseries, baselineStats) {
+  const errMean = baselineStats?.error_rate?.mean ?? 0;
+  const errStd  = baselineStats?.error_rate?.std  ?? 0;
+  const ceil    = errMean + 2 * errStd;
+  const floor   = Math.max(0, errMean - 2 * errStd);
+
+  const errData = Array(60).fill(null);
+  isAnomBuf.fill(false);
+
+  const offset = Math.max(0, 60 - timeseries.length);
+  timeseries.forEach((p, i) => {
+    errData[offset + i]  = typeof p.error_rate === 'number' ? p.error_rate : null;
+    isAnomBuf[offset + i] = !!p.is_anomaly;
+  });
+
+  errChart.data.datasets[0].data = Array(60).fill(ceil);
+  errChart.data.datasets[1].data = Array(60).fill(floor);
+  errChart.data.datasets[2].data = errData;
+  errChart.update('none');
+}
+
+// ── Anomaly event feed ────────────────────────────────────────────────────
+function renderAnomalyEvents(events) {
+  const el = document.getElementById('anom-body');
+  if (!events.length) {
+    el.innerHTML = '<div class="empty">No anomalies detected</div>';
+    return;
+  }
+  el.innerHTML = events.map(e => {
+    const ts    = toEastern(e.timestamp);
+    const score = typeof e.score         === 'number' ? e.score.toFixed(3)         : '—';
+    const rps   = typeof e.rps           === 'number' ? e.rps.toFixed(2)           : '—';
+    const err   = typeof e.error_rate    === 'number' ? e.error_rate.toFixed(1)    : '—';
+    const lat   = typeof e.p95_latency_ms === 'number' ? Math.round(e.p95_latency_ms) : '—';
+    return `<div class="anom-row">
+      <div class="anom-hdr">
+        <span class="anom-ts">${esc(ts)}</span>
+        <span class="anom-score">score ${score}</span>
+      </div>
+      <div class="anom-metrics">rps ${rps} &middot; err ${err}% &middot; p95 ${lat}ms</div>
+    </div>`;
+  }).join('');
 }
 
 // ── Logs panel ────────────────────────────────────────────────────────────

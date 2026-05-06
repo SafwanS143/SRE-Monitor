@@ -15,12 +15,15 @@ services:
       - TARGET_URL=http://target-api:8000/health
       - CONTAINER_NAME=target-api
       - SLACK_WEBHOOK=${SLACK_WEBHOOK}
+      - PROMETHEUS_URL=http://prometheus:9090
       - TZ=America/Toronto
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/data
+      - ./baseline.csv:/app/baseline.csv:ro
     depends_on:
       - target-api
+      - prometheus
     restart: always
 
   dashboard:
