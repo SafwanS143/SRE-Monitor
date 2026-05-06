@@ -66,3 +66,22 @@ class AnomalyDetector:
         is_anomaly = self.model.predict(X)[0] == -1
         score      = float(self.model.score_samples(X)[0])
         return bool(is_anomaly), score
+
+    def primary_cause(self, rps: float, error_rate: float, latency: float) -> str:
+        """Return which metric deviates most from baseline in σ terms, e.g. 'error_rate (8.2σ)'."""
+        if not self.enabled:
+            return ""
+        candidates = {
+            "error_rate": (error_rate, self.baseline_stats["error_rate"]),
+            "latency":    (latency,    self.baseline_stats["p95_latency_ms"]),
+            "rps":        (rps,        self.baseline_stats["rps"]),
+        }
+        best, best_sigma = "", 0.0
+        for name, (val, stats) in candidates.items():
+            std = stats["std"]
+            sigma = abs(val - stats["mean"]) / std if std > 0 else 0.0
+            if sigma > best_sigma:
+                best_sigma, best = sigma, name
+        if best_sigma < 1.0:
+            return ""
+        return f"{best} ({best_sigma:.1f}σ from baseline)"

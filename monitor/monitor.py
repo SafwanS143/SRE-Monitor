@@ -258,15 +258,17 @@ while True:
             log_anomaly_score(ts_str, rps, error_rate, latency, score, is_anomaly)
 
             if is_anomaly:
+                cause = detector.primary_cause(rps, error_rate, latency)
+                cause_str = f" · {cause}" if cause else ""
                 print(
-                    f"[ANOMALY] {display_ts} — score={score:.3f} "
+                    f"[ANOMALY] {display_ts}{cause_str} — score={score:.3f} "
                     f"rps={rps:.2f} err={error_rate:.1f}% p95={latency:.0f}ms"
                 )
                 now = time.time()
                 if now - last_anomaly_alert >= ANOMALY_ALERT_COOLDOWN:
                     send_slack(
                         "ANOMALY",
-                        f":warning: *ANOMALY DETECTED* — score={score:.3f} "
+                        f":warning: *ANOMALY DETECTED*{cause_str} — score={score:.3f} "
                         f"rps={rps:.2f} err={error_rate:.1f}% p95={latency:.0f}ms",
                     )
                     last_anomaly_alert = now
