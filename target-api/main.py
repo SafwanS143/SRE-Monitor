@@ -29,7 +29,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-Instrumentator().add(metrics.requests()).add(metrics.latency()).instrument(app).expose(app)
+# should_group_status_codes=False so the `status` label is the raw code ("500"),
+# not the grouped form ("5xx"). Queries elsewhere filter on status="500".
+Instrumentator().add(
+    metrics.requests(should_group_status_codes=False)
+).add(metrics.latency()).instrument(app).expose(app)
 degradation_level = 0.0
 
 _docker_client = docker.from_env()
@@ -155,13 +159,6 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/chaos")
-def chaos():
-    global degradation_level
-    degradation_level = 1.0
-    return {"message": "chaos triggered — /health now returns 500"}
-
-
 def _run_degradation():
     global degradation_level
     for _ in range(4):
@@ -169,12 +166,12 @@ def _run_degradation():
         degradation_level = min(degradation_level + 0.25, 1.0)
 
 
-@app.post("/chaos-slow")
-def chaos_slow():
+@app.post("/chaos")
+def chaos():
     global degradation_level
     degradation_level = 0.0
     threading.Thread(target=_run_degradation, daemon=True).start()
-    return {"message": "slow degradation started — degradation_level reaches 1.0 over ~8s"}
+    return {"message": "gradual degradation started — degradation_level reaches 1.0 over ~8s"}
 
 
 @app.post("/recover")
