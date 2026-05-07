@@ -270,7 +270,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
       <div class="panel-title">SLO Tracker — Recovery &lt;30s</div>
       <div class="slo-cards">
         <div class="slo-card">
-          <div class="slo-card-lbl">Total Incidents</div>
+          <div class="slo-card-lbl">Total Failures</div>
           <div class="slo-card-val" id="slo-total">—</div>
           <div class="slo-card-sub">last 30 days</div>
         </div>
@@ -301,8 +301,9 @@ const SLACK_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="white">
 // ── Rolling data buffers ─────────────────────────────────────────────────
 const rpsBuf    = Array(60).fill(null);
 const errBuf    = Array(60).fill(null);
-const isAnomBuf  = Array(60).fill(false);  // anomaly flags for errChart red dots
-const triggerBuf = Array(60).fill(null);   // trigger type per point for tooltip
+const isAnomBuf       = Array(60).fill(false);  // anomaly flags for errChart red dots
+const triggerBuf      = Array(60).fill(null);   // trigger type per point for tooltip
+const primaryMetricBuf = Array(60).fill(null);  // which metric drove rps_latency_if
 
 let lastStatusAt    = null;
 let liveUptime      = null;
@@ -408,9 +409,9 @@ const errChart = new Chart(document.getElementById('err-chart'), {
             if (isAnomBuf[ctx.dataIndex]) {
               const t    = triggerBuf[ctx.dataIndex];
               const kind = t === 'error_rate_threshold' ? 'Error Rate spike'
-                         : t === 'rps_latency_if'       ? 'RPS / Latency (IF)'
+                         : t === 'rps_latency_if'       ? (primaryMetricBuf[ctx.dataIndex] || 'RPS/Latency') + ' anomaly'
                          : 'Anomaly';
-              return `⚠ ${kind}  ·  err ${errStr}`;
+              return `${kind}  ·  err ${errStr}`;
             }
             return `err ${errStr}`;
           }
@@ -524,7 +525,7 @@ function renderIncidents(incidents, anomalyEvents = []) {
 
   const incRows = incidents.map(inc => ({
     ts:    inc.timestamp,
-    type:  inc.resolved ? 'recovered' : 'failure',
+    label: inc.resolved ? 'Recovered' : 'Failure',
     cls:   inc.resolved ? 'b-rec' : 'b-fail',
     desc:  inc.description,
     dur:   inc.duration_seconds != null ? inc.duration_seconds + 's' : '—',
@@ -534,16 +535,17 @@ function renderIncidents(incidents, anomalyEvents = []) {
     const label = e.trigger === 'error_rate_threshold' ? 'error spike'
                 : e.trigger === 'rps_latency_if'       ? 'IF model'
                 : 'anomaly';
+
     const rps   = typeof e.rps            === 'number' ? e.rps.toFixed(2)              : '—';
     const err   = typeof e.error_rate     === 'number' ? e.error_rate.toFixed(1) + '%' : '—';
     const lat   = typeof e.p95_latency_ms === 'number' ? Math.round(e.p95_latency_ms) + 'ms' : '—';
     const score = typeof e.score          === 'number' ? e.score.toFixed(3)            : '—';
     return {
-      ts:   e.timestamp,
-      type: 'anomaly',
-      cls:  'b-anom',
-      desc: `${label} · rps ${rps} · err ${err} · p95 ${lat} · score ${score}`,
-      dur:  '—',
+      ts:    e.timestamp,
+      label: 'Anomaly',
+      cls:   'b-anom',
+      desc:  `${label} · rps ${rps} · err ${err} · p95 ${lat} · score ${score}`,
+      dur:   '—',
     };
   });
 
@@ -557,7 +559,7 @@ function renderIncidents(incidents, anomalyEvents = []) {
   }
   el.innerHTML = all.map(row => `<div class="inc-row">
     <span class="inc-ts">${esc(toEastern(row.ts))}</span>
-    <span class="badge ${row.cls}">${row.type}</span>
+    <span class="badge ${row.cls}">${row.label}</span>
     <span class="inc-desc">${esc(row.desc)}</span>
     <span class="inc-dur">${esc(row.dur)}</span>
   </div>`).join('');
@@ -638,6 +640,7 @@ function updateAnomalyChart(timeseries, baselineStats) {
   const labels  = Array(n).fill('');
   isAnomBuf.fill(false);
   triggerBuf.fill(null);
+  primaryMetricBuf.fill(null);
 
   timeseries.forEach((p, i) => {
     const idx       = offset + i;
@@ -645,6 +648,14 @@ function updateAnomalyChart(timeseries, baselineStats) {
     isAnomBuf[idx]  = !!p.is_anomaly;
     triggerBuf[idx] = p.trigger || null;
     labels[idx]     = toEastern(p.timestamp);
+
+    if (p.trigger === 'rps_latency_if') {
+      const rpsSigma = (baselineStats?.rps?.std > 0)
+        ? Math.abs((p.rps || 0) - baselineStats.rps.mean) / baselineStats.rps.std : 0;
+      const latSigma = (baselineStats?.p95_latency_ms?.std > 0)
+        ? Math.abs((p.p95_latency_ms || 0) - baselineStats.p95_latency_ms.mean) / baselineStats.p95_latency_ms.std : 0;
+      primaryMetricBuf[idx] = rpsSigma >= latSigma ? 'RPS' : 'Latency';
+    }
   });
 
   errChart.data.labels           = labels;
