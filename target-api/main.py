@@ -53,7 +53,8 @@ def _ensure_sample_table():
                 error_rate     REAL,
                 p95_latency_ms REAL,
                 score          REAL,
-                is_anomaly     INTEGER DEFAULT 0
+                is_anomaly     INTEGER DEFAULT 0,
+                trigger        TEXT
             );
             CREATE TABLE IF NOT EXISTS baseline_stats (
                 metric TEXT PRIMARY KEY,
@@ -62,6 +63,12 @@ def _ensure_sample_table():
             );
         """)
         con.commit()
+        # Migrate existing DB if trigger column is missing
+        try:
+            con.execute("ALTER TABLE anomaly_scores ADD COLUMN trigger TEXT")
+            con.commit()
+        except Exception:
+            pass
         con.close()
     except Exception as exc:
         log.error("Failed to ensure DB tables: %s", exc)
@@ -261,7 +268,7 @@ def api_status():
 
         # Anomaly timeseries — last 60 scoring events for the chart (oldest first)
         cur.execute(
-            "SELECT timestamp, rps, error_rate, p95_latency_ms, score, is_anomaly "
+            "SELECT timestamp, rps, error_rate, p95_latency_ms, score, is_anomaly, trigger "
             "FROM anomaly_scores ORDER BY id DESC LIMIT 60"
         )
         anomaly_timeseries = [
@@ -272,13 +279,14 @@ def api_status():
                 "p95_latency_ms": r[3],
                 "score":          r[4],
                 "is_anomaly":     bool(r[5]),
+                "trigger":        r[6],
             }
             for r in reversed(cur.fetchall())
         ]
 
         # Anomaly events — last 20 confirmed anomalies for the event feed (newest first)
         cur.execute(
-            "SELECT timestamp, rps, error_rate, p95_latency_ms, score "
+            "SELECT timestamp, rps, error_rate, p95_latency_ms, score, trigger "
             "FROM anomaly_scores WHERE is_anomaly=1 ORDER BY id DESC LIMIT 20"
         )
         anomaly_events = [
@@ -288,6 +296,7 @@ def api_status():
                 "error_rate":     r[2],
                 "p95_latency_ms": r[3],
                 "score":          r[4],
+                "trigger":        r[5],
             }
             for r in cur.fetchall()
         ]

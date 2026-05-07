@@ -391,8 +391,12 @@ const errChart = new Chart(document.getElementById('err-chart'), {
   options: {
     ...CHART_OPTS,
     scales: {
-      x: { display: false },
-      y: { ...Y_AXIS, min: 0 }
+      x: {
+        ticks: { ...TICK_STYLE, maxTicksLimit: 6, maxRotation: 0 },
+        grid:   { display: false },
+        border: { display: false },
+      },
+      y: { ...Y_AXIS, min: 0, max: 1 }
     }
   }
 });
@@ -579,22 +583,29 @@ function renderSloTracker(incidents) {
 
 // ── Anomaly chart update ──────────────────────────────────────────────────
 function updateAnomalyChart(timeseries, baselineStats) {
-  const errMean = baselineStats?.error_rate?.mean ?? 0;
-  const errStd  = baselineStats?.error_rate?.std  ?? 0;
-  const ceil    = errMean + 2 * errStd;
+  // Normalise to 0-1 (stored as percentage 0-100)
+  const errMean = (baselineStats?.error_rate?.mean ?? 0) / 100;
+  const errStd  = (baselineStats?.error_rate?.std  ?? 0) / 100;
+  const ceil    = Math.min(1, errMean + 2 * errStd);
   const floor   = Math.max(0, errMean - 2 * errStd);
 
-  const errData = Array(60).fill(null);
+  const n      = 60;
+  const offset = Math.max(0, n - timeseries.length);
+
+  const errData  = Array(n).fill(null);
+  const labels   = Array(n).fill('');
   isAnomBuf.fill(false);
 
-  const offset = Math.max(0, 60 - timeseries.length);
   timeseries.forEach((p, i) => {
-    errData[offset + i]  = typeof p.error_rate === 'number' ? p.error_rate : null;
-    isAnomBuf[offset + i] = !!p.is_anomaly;
+    const idx = offset + i;
+    errData[idx]   = typeof p.error_rate === 'number' ? p.error_rate / 100 : null;
+    isAnomBuf[idx] = !!p.is_anomaly;
+    labels[idx]    = toEastern(p.timestamp);
   });
 
-  errChart.data.datasets[0].data = Array(60).fill(ceil);
-  errChart.data.datasets[1].data = Array(60).fill(floor);
+  errChart.data.labels           = labels;
+  errChart.data.datasets[0].data = Array(n).fill(ceil);
+  errChart.data.datasets[1].data = Array(n).fill(floor);
   errChart.data.datasets[2].data = errData;
   errChart.update('none');
 }
@@ -608,14 +619,20 @@ function renderAnomalyEvents(events) {
   }
   el.innerHTML = events.map(e => {
     const ts    = toEastern(e.timestamp);
-    const score = typeof e.score         === 'number' ? e.score.toFixed(3)         : '—';
-    const rps   = typeof e.rps           === 'number' ? e.rps.toFixed(2)           : '—';
-    const err   = typeof e.error_rate    === 'number' ? e.error_rate.toFixed(1)    : '—';
-    const lat   = typeof e.p95_latency_ms === 'number' ? Math.round(e.p95_latency_ms) : '—';
+    const score = typeof e.score          === 'number' ? e.score.toFixed(3)            : '—';
+    const rps   = typeof e.rps            === 'number' ? e.rps.toFixed(2)              : '—';
+    const err   = typeof e.error_rate     === 'number' ? e.error_rate.toFixed(1)       : '—';
+    const lat   = typeof e.p95_latency_ms === 'number' ? Math.round(e.p95_latency_ms)  : '—';
+    const triggerLabel = e.trigger === 'error_rate_threshold' ? 'threshold'
+                       : e.trigger === 'rps_latency_if'       ? 'IF model'
+                       : '';
+    const triggerHtml = triggerLabel
+      ? `<span style="font-size:10px;background:var(--amber-bg);color:var(--amber-text);padding:1px 6px;border-radius:3px;margin-left:5px">${triggerLabel}</span>`
+      : '';
     return `<div class="anom-row">
       <div class="anom-hdr">
         <span class="anom-ts">${esc(ts)}</span>
-        <span class="anom-score">score ${score}</span>
+        <span class="anom-score">score ${score}${triggerHtml}</span>
       </div>
       <div class="anom-metrics">rps ${rps} &middot; err ${err}% &middot; p95 ${lat}ms</div>
     </div>`;

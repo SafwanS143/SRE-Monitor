@@ -49,7 +49,8 @@ def init_db():
             error_rate     REAL,
             p95_latency_ms REAL,
             score          REAL,
-            is_anomaly     INTEGER DEFAULT 0
+            is_anomaly     INTEGER DEFAULT 0,
+            trigger        TEXT
         );
         CREATE TABLE IF NOT EXISTS baseline_stats (
             metric TEXT PRIMARY KEY,
@@ -58,6 +59,12 @@ def init_db():
         );
     """)
     con.commit()
+    # Migrate existing DB if trigger column is missing
+    try:
+        con.execute("ALTER TABLE anomaly_scores ADD COLUMN trigger TEXT")
+        con.commit()
+    except Exception:
+        pass
     con.close()
 
 
@@ -96,14 +103,14 @@ def log_slack_alert(alert_type, message):
     con.close()
 
 
-def log_anomaly_score(timestamp, rps, error_rate, latency, score, is_anomaly):
+def log_anomaly_score(timestamp, rps, error_rate, latency, score, is_anomaly, trigger):
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute(
         "INSERT INTO anomaly_scores "
-        "(timestamp, rps, error_rate, p95_latency_ms, score, is_anomaly) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (timestamp, rps, error_rate, latency, score, int(is_anomaly)),
+        "(timestamp, rps, error_rate, p95_latency_ms, score, is_anomaly, trigger) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (timestamp, rps, error_rate, latency, score, int(is_anomaly), trigger),
     )
     # keep last 500 rows
     cur.execute(
@@ -254,11 +261,11 @@ while True:
         if rps == 0.0 and error_rate == 0.0 and latency == 0.0:
             pass
         else:
-            is_anomaly, score = detector.score_metrics(rps, error_rate, latency)
-            log_anomaly_score(ts_str, rps, error_rate, latency, score, is_anomaly)
+            is_anomaly, score, trigger = detector.score_metrics(rps, error_rate, latency)
+            log_anomaly_score(ts_str, rps, error_rate, latency, score, is_anomaly, trigger)
 
             if is_anomaly:
-                cause = detector.primary_cause(rps, error_rate, latency)
+                cause = detector.primary_cause(rps, error_rate, latency, trigger)
                 cause_str = f" · {cause}" if cause else ""
                 print(
                     f"[ANOMALY] {display_ts}{cause_str} — score={score:.3f} "
