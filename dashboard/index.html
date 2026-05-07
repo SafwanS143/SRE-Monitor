@@ -119,7 +119,11 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
 
 /* Incidents */
-#inc-body{flex:1;overflow-y:auto;min-height:0;padding-right:8px}
+#inc-body{
+  flex:1;overflow-y:auto;min-height:0;padding-right:8px;
+  mask-image:linear-gradient(to bottom,black 78%,transparent 100%);
+  -webkit-mask-image:linear-gradient(to bottom,black 78%,transparent 100%);
+}
 #inc-body::-webkit-scrollbar{width:3px}
 #inc-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:2px}
 .inc-row{
@@ -142,16 +146,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 /* ── Bottom row ──────────────────────────────────────────── */
 #bot{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);min-height:0}
 
-/* Anomaly event feed — sits below the errChart inside the same panel */
-#anom-body{max-height:80px;overflow-y:auto;padding-right:8px;margin-top:8px;border-top:.5px solid var(--border);flex-shrink:0}
-#anom-body::-webkit-scrollbar{width:3px}
-#anom-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:2px}
-.anom-row{padding:4px 0;border-bottom:.5px solid var(--border)}
-.anom-row:last-child{border-bottom:none}
-.anom-hdr{display:flex;justify-content:space-between;margin-bottom:1px}
-.anom-score{font-size:11px;color:var(--amber-text);font-weight:500}
-.anom-ts{font-size:11px;color:var(--muted)}
-.anom-metrics{font-size:11px;color:rgba(255,255,255,0.45)}
 
 /* Slack */
 #sl-body{flex:1;overflow-y:auto;min-height:0;padding-right:8px}
@@ -246,12 +240,11 @@ html,body{height:100%;background:var(--bg);color:var(--text);
       <div class="chart-wrap"><canvas id="rps-chart"></canvas></div>
     </div>
     <div class="panel">
-      <div class="panel-title">Anomaly Detection</div>
+      <div class="panel-title">Anomaly Detection — Error Rate</div>
       <div class="chart-wrap">
         <canvas id="err-chart"></canvas>
         <div id="err-empty" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.25);font-size:13px;pointer-events:none">collecting data…</div>
       </div>
-      <div id="anom-body"><div class="empty">No anomalies detected</div></div>
     </div>
   </div>
 
@@ -497,33 +490,52 @@ function applyStatus(d) {
   updateAnomalyChart(d.anomaly_timeseries, d.baseline_stats);
 
   // Sub-panels
-  renderIncidents(incidents);
+  renderIncidents(incidents, d.anomaly_events || []);
   renderSlack(d.slack_alerts || []);
   renderSloTracker(incidents);
-  renderAnomalyEvents(d.anomaly_events || []);
 }
 
 // ── Incidents panel ───────────────────────────────────────────────────────
-function renderIncidents(incidents) {
+function renderIncidents(incidents, anomalyEvents = []) {
   const el = document.getElementById('inc-body');
-  if (!incidents.length) {
+
+  const incRows = incidents.map(inc => ({
+    ts:    inc.timestamp,
+    type:  inc.resolved ? 'recovered' : 'failure',
+    cls:   inc.resolved ? 'b-rec' : 'b-fail',
+    desc:  inc.description,
+    dur:   inc.duration_seconds != null ? inc.duration_seconds + 's' : '—',
+  }));
+
+  const anomRows = anomalyEvents.map(e => {
+    const label = e.trigger === 'error_rate_threshold' ? 'error spike'
+                : e.trigger === 'rps_latency_if'       ? 'IF model'
+                : 'anomaly';
+    const err   = typeof e.error_rate === 'number' ? e.error_rate.toFixed(1) + '%' : '—';
+    const score = typeof e.score      === 'number' ? e.score.toFixed(3)            : '—';
+    return {
+      ts:   e.timestamp,
+      type: 'anomaly',
+      cls:  'b-anom',
+      desc: `${label} · err ${err} · score ${score}`,
+      dur:  '—',
+    };
+  });
+
+  const all = [...incRows, ...anomRows]
+    .sort((a, b) => (b.ts > a.ts ? 1 : -1))
+    .slice(0, 60);
+
+  if (!all.length) {
     el.innerHTML = '<div class="empty">No incidents recorded</div>';
     return;
   }
-  const sorted = [...incidents].sort((a, b) => b.id - a.id);
-  el.innerHTML = sorted.map((inc, i) => {
-    const type = inc.resolved ? 'recovered' : (inc.type === 'anomaly' ? 'anomaly' : 'failure');
-    const cls  = type === 'recovered' ? 'b-rec' : type === 'anomaly' ? 'b-anom' : 'b-fail';
-    const ts   = toEastern(inc.timestamp);
-    const dur  = inc.duration_seconds != null ? inc.duration_seconds + 's' : '—';
-    const opacity = i < 3 ? 1 : Math.max(0.3, 1 - (i - 2) * 0.18);
-    return `<div class="inc-row" style="opacity:${opacity}">
-      <span class="inc-ts">${esc(ts)}</span>
-      <span class="badge ${cls}">${type}</span>
-      <span class="inc-desc">${esc(inc.description)}</span>
-      <span class="inc-dur">${esc(dur)}</span>
-    </div>`;
-  }).join('');
+  el.innerHTML = all.map(row => `<div class="inc-row">
+    <span class="inc-ts">${esc(toEastern(row.ts))}</span>
+    <span class="badge ${row.cls}">${row.type}</span>
+    <span class="inc-desc">${esc(row.desc)}</span>
+    <span class="inc-dur">${esc(row.dur)}</span>
+  </div>`).join('');
 }
 
 // ── Slack panel ───────────────────────────────────────────────────────────
@@ -615,34 +627,7 @@ function updateAnomalyChart(timeseries, baselineStats) {
   errChart.update('none');
 }
 
-// ── Anomaly event feed ────────────────────────────────────────────────────
-function renderAnomalyEvents(events) {
-  const el = document.getElementById('anom-body');
-  if (!events.length) {
-    el.innerHTML = '<div class="empty">No anomalies detected</div>';
-    return;
-  }
-  el.innerHTML = events.map(e => {
-    const ts    = toEastern(e.timestamp);
-    const score = typeof e.score          === 'number' ? e.score.toFixed(3)            : '—';
-    const rps   = typeof e.rps            === 'number' ? e.rps.toFixed(2)              : '—';
-    const err   = typeof e.error_rate     === 'number' ? e.error_rate.toFixed(1)       : '—';
-    const lat   = typeof e.p95_latency_ms === 'number' ? Math.round(e.p95_latency_ms)  : '—';
-    const triggerLabel = e.trigger === 'error_rate_threshold' ? 'threshold'
-                       : e.trigger === 'rps_latency_if'       ? 'IF model'
-                       : '';
-    const triggerHtml = triggerLabel
-      ? `<span style="font-size:10px;background:var(--amber-bg);color:var(--amber-text);padding:1px 6px;border-radius:3px;margin-left:5px">${triggerLabel}</span>`
-      : '';
-    return `<div class="anom-row">
-      <div class="anom-hdr">
-        <span class="anom-ts">${esc(ts)}</span>
-        <span class="anom-score">score ${score}${triggerHtml}</span>
-      </div>
-      <div class="anom-metrics">rps ${rps} &middot; err ${err}% &middot; p95 ${lat}ms</div>
-    </div>`;
-  }).join('');
-}
+
 
 // ── Logs panel ────────────────────────────────────────────────────────────
 function applyLogs(d) {
