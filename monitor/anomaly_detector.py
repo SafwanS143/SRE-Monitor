@@ -39,11 +39,22 @@ class AnomalyDetector:
 
             X = np.array(rows)
 
-            # IF trained on all 3 features (rps, error_rate, latency).
+            # IsolationForest can't learn deviation on a degenerate (std=0)
+            # feature — random splits on a constant produce no isolation. To
+            # let IF actually flag deviations on such columns (e.g. error_rate
+            # is all 0 in a clean baseline), inject tiny synthetic noise on
+            # those columns *only* for fitting. baseline_stats below keeps the
+            # true std for σ-attribution.
+            X_fit = X.copy()
+            rng   = np.random.default_rng(42)
+            for col in range(X_fit.shape[1]):
+                if X_fit[:, col].std() == 0:
+                    X_fit[:, col] = X_fit[:, col] + rng.normal(0, 1e-3, X_fit.shape[0])
+
             # contamination=0.01 so only the most extreme 1% of normal
             # variance triggers — avoids noise from low-traffic baseline.
             self.model = IsolationForest(contamination=0.01, random_state=42)
-            self.model.fit(X)
+            self.model.fit(X_fit)
 
             # baseline_stats for all 3 metrics: used for the error_rate
             # threshold check and for the dashboard normal band.

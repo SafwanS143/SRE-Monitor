@@ -204,6 +204,11 @@ def probe_error_rate() -> float:
         return fails / len(probe_history) * 100.0
 
 
+def clear_probe_history() -> None:
+    with probe_lock:
+        probe_history.clear()
+
+
 def _anomaly_probe_loop() -> None:
     """Independent high-frequency probe — feeds error_rate signal only,
     does NOT drive restart logic."""
@@ -230,6 +235,9 @@ def restart_container():
     try:
         container = client.containers.get(CONTAINER_NAME)
         container.restart()
+        # Drop accumulated probe failures so the freshly-restarted container
+        # isn't immediately flagged anomalous on stale window data.
+        clear_probe_history()
         print(f"[RESTART] Container {CONTAINER_NAME} restarted")
     except Exception as e:
         print(f"[ERROR] Could not restart container: {e}")
