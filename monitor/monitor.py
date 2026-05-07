@@ -21,6 +21,7 @@ DB_PATH           = "/data/incidents.db"
 ANOMALY_ALERT_COOLDOWN = 60  # seconds between alerts of the same trigger type
 PROBE_WINDOW_SEC       = 30  # rolling window for in-process error rate
 ANOMALY_PROBE_INTERVAL = 1   # high-frequency probe cadence for anomaly signal
+RESTART_GRACE_SEC      = 5   # ignore probes for this long after a restart
 
 MONITOR_START = dt.utcnow()
 client = docker.from_env()
@@ -185,10 +186,15 @@ def fetch_metrics():
 # degradation that the slow probe would statistically miss.
 probe_history: deque = deque()
 probe_lock = threading.Lock()
+probe_grace_until: float = 0.0   # ignore probe outcomes until this unix ts
 
 
 def record_probe(success: bool) -> None:
     now = time.time()
+    if now < probe_grace_until:
+        # Container is still booting after a restart — its failures aren't
+        # informative and shouldn't refill the window we just cleared.
+        return
     with probe_lock:
         probe_history.append((now, success))
         cutoff = now - PROBE_WINDOW_SEC
@@ -232,13 +238,20 @@ def check_health():
 
 
 def restart_container():
+    global probe_grace_until
     try:
         container = client.containers.get(CONTAINER_NAME)
         container.restart()
-        # Drop accumulated probe failures so the freshly-restarted container
-        # isn't immediately flagged anomalous on stale window data.
+        # Drop accumulated probe failures and silence both probe streams for a
+        # grace period — otherwise the still-booting container's connection
+        # refusals refill the window we just cleared. Also reset Slack
+        # cooldowns so a fresh anomaly post-restart can alert immediately.
         clear_probe_history()
-        print(f"[RESTART] Container {CONTAINER_NAME} restarted")
+        probe_grace_until = time.time() + RESTART_GRACE_SEC
+        for k in last_anomaly_alert:
+            last_anomaly_alert[k] = 0.0
+        display_ts = time.strftime("%H:%M:%S")
+        print(f"[RESTART] {display_ts} — Container {CONTAINER_NAME} restarted")
     except Exception as e:
         print(f"[ERROR] Could not restart container: {e}")
 
@@ -282,6 +295,35 @@ while True:
     healthy = check_health()
     record_probe(healthy)
 
+    # ── Anomaly scoring ───────────────────────────────────────────────────
+    # Runs BEFORE OK/FAIL print so that when both fire on the same iteration,
+    # the [ANOMALY] line appears above the [FAIL] line in the log.
+    if detector.enabled:
+        rps, latency = fetch_metrics()
+        error_rate   = probe_error_rate()
+
+        # Skip scoring when there's nothing to score on (startup / network gap)
+        if not (rps == 0.0 and error_rate == 0.0 and latency == 0.0):
+            is_anomaly, score, trigger = detector.score_metrics(rps, error_rate, latency)
+            log_anomaly_score(ts_str, rps, error_rate, latency, score, is_anomaly, trigger)
+
+            if is_anomaly:
+                cause = detector.primary_cause(rps, error_rate, latency, trigger)
+                cause_str = f" · {cause}" if cause else ""
+                print(
+                    f"[ANOMALY] {display_ts}{cause_str} — score={score:.3f} "
+                    f"rps={rps:.2f} err={error_rate:.1f}% p95={latency:.0f}ms"
+                )
+                now = time.time()
+                if now - last_anomaly_alert.get(trigger, 0.0) >= ANOMALY_ALERT_COOLDOWN:
+                    send_slack(
+                        "ANOMALY",
+                        f":warning: *ANOMALY DETECTED*{cause_str} — score={score:.3f} "
+                        f"rps={rps:.2f} err={error_rate:.1f}% p95={latency:.0f}ms",
+                    )
+                    last_anomaly_alert[trigger] = now
+
+    # ── Health-check decisioning (logged after anomaly so ordering is stable)
     if healthy:
         print(f"[OK] {display_ts}")
         if not was_healthy:
@@ -303,33 +345,8 @@ while True:
             restart_container()
             send_slack("FAILURE", f":rotating_light: *FAILURE DETECTED* — restarting `{CONTAINER_NAME}`")
             was_healthy = False
-
-    # ── Anomaly scoring ───────────────────────────────────────────────────
-    if detector.enabled:
-        rps, latency = fetch_metrics()
-        error_rate   = probe_error_rate()
-
-        # Skip scoring when there's nothing to score on (startup / network gap)
-        if rps == 0.0 and error_rate == 0.0 and latency == 0.0:
-            pass
-        else:
-            is_anomaly, score, trigger = detector.score_metrics(rps, error_rate, latency)
-            log_anomaly_score(ts_str, rps, error_rate, latency, score, is_anomaly, trigger)
-
-            if is_anomaly:
-                cause = detector.primary_cause(rps, error_rate, latency, trigger)
-                cause_str = f" · {cause}" if cause else ""
-                print(
-                    f"[ANOMALY] {display_ts}{cause_str} — score={score:.3f} "
-                    f"rps={rps:.2f} err={error_rate:.1f}% p95={latency:.0f}ms"
-                )
-                now = time.time()
-                if now - last_anomaly_alert.get(trigger, 0.0) >= ANOMALY_ALERT_COOLDOWN:
-                    send_slack(
-                        "ANOMALY",
-                        f":warning: *ANOMALY DETECTED*{cause_str} — score={score:.3f} "
-                        f"rps={rps:.2f} err={error_rate:.1f}% p95={latency:.0f}ms",
-                    )
-                    last_anomaly_alert[trigger] = now
+            # Give the freshly-restarted container time to boot before the
+            # next probe iteration counts toward another restart.
+            consecutive_failures = 0
 
     time.sleep(CHECK_INTERVAL)
