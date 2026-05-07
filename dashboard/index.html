@@ -247,7 +247,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);
     </div>
     <div class="panel">
       <div class="panel-title">Anomaly Detection</div>
-      <div class="chart-wrap"><canvas id="err-chart"></canvas></div>
+      <div class="chart-wrap" style="min-height:200px;position:relative">
+        <canvas id="err-chart"></canvas>
+        <div id="err-empty" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.25);font-size:13px;pointer-events:none">collecting data…</div>
+      </div>
       <div id="anom-body"><div class="empty">No anomalies detected</div></div>
     </div>
   </div>
@@ -379,10 +382,10 @@ const errChart = new Chart(document.getElementById('err-chart'), {
         fill: false,
         spanGaps: true,
         pointRadius(ctx) {
-          return isAnomBuf[ctx.dataIndex] ? 4 : 0;
+          return isAnomBuf[ctx.dataIndex] ? 5 : 2;
         },
         pointBackgroundColor(ctx) {
-          return isAnomBuf[ctx.dataIndex] ? '#E24B4A' : 'transparent';
+          return isAnomBuf[ctx.dataIndex] ? '#E24B4A' : 'rgba(255,255,255,0.18)';
         },
         pointBorderWidth: 0,
       }
@@ -491,13 +494,7 @@ function applyStatus(d) {
   rpsChart.data.datasets[0].data = rpsBuf.slice();
   rpsChart.update('none');
 
-  if (d.anomaly_timeseries && d.anomaly_timeseries.length > 0) {
-    updateAnomalyChart(d.anomaly_timeseries, d.baseline_stats);
-  } else {
-    // anomaly detection disabled — show incident-based error rate as fallback
-    errChart.data.datasets[2].data = errBuf.slice();
-    errChart.update('none');
-  }
+  updateAnomalyChart(d.anomaly_timeseries, d.baseline_stats);
 
   // Sub-panels
   renderIncidents(incidents);
@@ -583,6 +580,14 @@ function renderSloTracker(incidents) {
 
 // ── Anomaly chart update ──────────────────────────────────────────────────
 function updateAnomalyChart(timeseries, baselineStats) {
+  const placeholder = document.getElementById('err-empty');
+
+  if (!timeseries || timeseries.length === 0) {
+    placeholder.style.display = 'flex';
+    return;
+  }
+  placeholder.style.display = 'none';
+
   // Normalise to 0-1 (stored as percentage 0-100)
   const errMean = (baselineStats?.error_rate?.mean ?? 0) / 100;
   const errStd  = (baselineStats?.error_rate?.std  ?? 0) / 100;
@@ -592,12 +597,12 @@ function updateAnomalyChart(timeseries, baselineStats) {
   const n      = 60;
   const offset = Math.max(0, n - timeseries.length);
 
-  const errData  = Array(n).fill(null);
-  const labels   = Array(n).fill('');
+  const errData = Array(n).fill(null);
+  const labels  = Array(n).fill('');
   isAnomBuf.fill(false);
 
   timeseries.forEach((p, i) => {
-    const idx = offset + i;
+    const idx      = offset + i;
     errData[idx]   = typeof p.error_rate === 'number' ? p.error_rate / 100 : null;
     isAnomBuf[idx] = !!p.is_anomaly;
     labels[idx]    = toEastern(p.timestamp);
