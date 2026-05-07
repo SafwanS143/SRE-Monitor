@@ -31,8 +31,8 @@ app.add_middleware(
 
 # should_group_status_codes=False so the `status` label is the raw code ("500"),
 # not the grouped form ("5xx"). Queries elsewhere filter on status="500".
-Instrumentator().add(
-    metrics.requests(should_group_status_codes=False)
+Instrumentator(should_group_status_codes=False).add(
+    metrics.requests()
 ).add(metrics.latency()).instrument(app).expose(app)
 degradation_level = 0.0
 
