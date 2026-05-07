@@ -39,12 +39,11 @@ class AnomalyDetector:
 
             X = np.array(rows)
 
-            # IF trained on RPS + latency only (columns 0 and 2).
+            # IF trained on all 3 features (rps, error_rate, latency).
             # contamination=0.01 so only the most extreme 1% of normal
             # variance triggers — avoids noise from low-traffic baseline.
-            X_rl = X[:, [0, 2]]
             self.model = IsolationForest(contamination=0.01, random_state=42)
-            self.model.fit(X_rl)
+            self.model.fit(X)
 
             # baseline_stats for all 3 metrics: used for the error_rate
             # threshold check and for the dashboard normal band.
@@ -65,50 +64,59 @@ class AnomalyDetector:
         except Exception as exc:
             log.error("[ANOMALY] Initialisation failed: %s — anomaly detection disabled", exc)
 
+    _METRIC_KEYS = (
+        ("rps",        "rps"),
+        ("error_rate", "error_rate"),
+        ("latency",    "p95_latency_ms"),
+    )
+
+    def _sigma(self, name: str, value: float) -> float:
+        stats = self.baseline_stats[name]
+        std   = stats["std"]
+        if std > 0:
+            return abs(value - stats["mean"]) / std
+        # Baseline std is 0 (e.g. error_rate during a clean baseline) — any
+        # deviation from the mean counts as a strong signal.
+        return float("inf") if value != stats["mean"] else 0.0
+
+    def _dominant_metric(self, rps: float, error_rate: float, latency: float):
+        values = {"rps": rps, "error_rate": error_rate, "p95_latency_ms": latency}
+        best_name, best_sigma = "rps", 0.0
+        for label, key in self._METRIC_KEYS:
+            sigma = self._sigma(key, values[key])
+            if sigma > best_sigma:
+                best_sigma, best_name = sigma, label
+        return best_name, best_sigma
+
     def score_metrics(self, rps: float, error_rate: float, latency: float):
         """
-        Hybrid detection — returns (is_anomaly, score, trigger).
+        Isolation Forest detection across all 3 signals — returns
+        (is_anomaly, score, trigger).
 
         trigger is one of:
-          "error_rate_threshold"  — error_rate exceeded mean + 2σ
-          "rps_latency_if"        — Isolation Forest flagged RPS/latency
-          None                    — no anomaly
+          "error_rate_if"   — IF fired, error_rate is the dominant deviation
+          "rps_latency_if"  — IF fired, RPS or latency is dominant
+          None              — no anomaly
         """
         if not self.enabled:
             return False, 0.0, None
 
-        # Primary signal: simple threshold on error_rate
-        er_stats  = self.baseline_stats["error_rate"]
-        threshold = er_stats["mean"] + 2 * er_stats["std"]
-        error_rate_triggered = error_rate > threshold
+        X          = np.array([[rps, error_rate, latency]])
+        is_if_anom = self.model.predict(X)[0] == -1
+        score      = float(self.model.score_samples(X)[0])
 
-        # Secondary signal: IF on RPS + latency
-        X_rl        = np.array([[rps, latency]])
-        is_if_anom  = self.model.predict(X_rl)[0] == -1
-        score       = float(self.model.score_samples(X_rl)[0])
+        if not is_if_anom:
+            return False, score, None
 
-        if error_rate_triggered:
-            return True, score, "error_rate_threshold"
-        if is_if_anom:
-            return True, score, "rps_latency_if"
-        return False, score, None
+        dominant, _ = self._dominant_metric(rps, error_rate, latency)
+        trigger = "error_rate_if" if dominant == "error_rate" else "rps_latency_if"
+        return True, score, trigger
 
     def primary_cause(self, rps: float, error_rate: float, latency: float, trigger: str = None) -> str:
         """Human-readable description of what triggered the anomaly."""
         if not self.enabled or not trigger:
             return ""
-        if trigger == "error_rate_threshold":
-            stats = self.baseline_stats["error_rate"]
-            std   = stats["std"]
-            sigma = abs(error_rate - stats["mean"]) / std if std > 0 else 0.0
-            return f"error_rate ({sigma:.1f}σ above threshold)"
-        if trigger == "rps_latency_if":
-            best, best_sigma = "", 0.0
-            for name, val, key in [("rps", rps, "rps"), ("latency", latency, "p95_latency_ms")]:
-                stats = self.baseline_stats[key]
-                std   = stats["std"]
-                sigma = abs(val - stats["mean"]) / std if std > 0 else 0.0
-                if sigma > best_sigma:
-                    best_sigma, best = sigma, name
-            return f"{best} ({best_sigma:.1f}σ from baseline)"
-        return ""
+        name, sigma = self._dominant_metric(rps, error_rate, latency)
+        if sigma == float("inf"):
+            return f"{name} (outside baseline distribution)"
+        return f"{name} ({sigma:.1f}σ from baseline)"

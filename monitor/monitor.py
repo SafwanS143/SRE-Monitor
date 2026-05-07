@@ -4,6 +4,8 @@ import time
 import os
 import sqlite3
 import datetime
+import threading
+from collections import deque
 from datetime import datetime as dt
 
 from anomaly_detector import AnomalyDetector
@@ -16,7 +18,9 @@ SLACK_WEBHOOK     = os.getenv("SLACK_WEBHOOK",     "")
 PROMETHEUS_URL    = os.getenv("PROMETHEUS_URL",    "http://prometheus:9090")
 DB_PATH           = "/data/incidents.db"
 
-ANOMALY_ALERT_COOLDOWN = 60  # seconds between anomaly Slack alerts to avoid spam
+ANOMALY_ALERT_COOLDOWN = 60  # seconds between alerts of the same trigger type
+PROBE_WINDOW_SEC       = 30  # rolling window for in-process error rate
+ANOMALY_PROBE_INTERVAL = 1   # high-frequency probe cadence for anomaly signal
 
 MONITOR_START = dt.utcnow()
 client = docker.from_env()
@@ -167,15 +171,49 @@ def prom_query(promql: str) -> float:
 
 def fetch_metrics():
     rps = prom_query('sum(rate(http_requests_total{handler="/health"}[15s]))')
-    error_rate = prom_query(
-        'rate(http_requests_total{handler="/health",status="500"}[15s])'
-        ' / rate(http_requests_total{handler="/health"}[15s]) * 100'
-    )
     latency = prom_query(
         'histogram_quantile(0.95, sum by(le)'
         ' (rate(http_request_duration_seconds_bucket[15s]))) * 1000'
     )
-    return rps, error_rate, latency
+    return rps, latency
+
+
+# Probe outcomes are tracked in-process so error_rate is immediate (no Prometheus
+# scrape lag) and survives container restarts that would reset Prom counters.
+# Fed by BOTH the main 5s health-check loop and the high-frequency anomaly probe
+# below — the latter gives the detector enough samples to catch probabilistic
+# degradation that the slow probe would statistically miss.
+probe_history: deque = deque()
+probe_lock = threading.Lock()
+
+
+def record_probe(success: bool) -> None:
+    now = time.time()
+    with probe_lock:
+        probe_history.append((now, success))
+        cutoff = now - PROBE_WINDOW_SEC
+        while probe_history and probe_history[0][0] < cutoff:
+            probe_history.popleft()
+
+
+def probe_error_rate() -> float:
+    with probe_lock:
+        if not probe_history:
+            return 0.0
+        fails = sum(1 for _, ok in probe_history if not ok)
+        return fails / len(probe_history) * 100.0
+
+
+def _anomaly_probe_loop() -> None:
+    """Independent high-frequency probe — feeds error_rate signal only,
+    does NOT drive restart logic."""
+    while True:
+        try:
+            r = requests.get(TARGET_URL, timeout=2)
+            record_probe(r.status_code == 200)
+        except Exception:
+            record_probe(False)
+        time.sleep(ANOMALY_PROBE_INTERVAL)
 
 
 # ── Health & restart ───────────────────────────────────────────────────────
@@ -217,12 +255,16 @@ detector = AnomalyDetector("/app/baseline.csv")
 write_baseline_stats(detector)
 
 print("[MONITOR] Starting health monitor...")
+threading.Thread(target=_anomaly_probe_loop, daemon=True).start()
 
 was_healthy        = True
 current_incident_id = None
 failure_start      = None
 consecutive_failures = 0
-last_anomaly_alert = 0.0   # unix timestamp of last [ANOMALY] Slack alert
+last_anomaly_alert = {     # unix ts of last Slack alert per trigger bucket
+    "error_rate_if":  0.0,
+    "rps_latency_if": 0.0,
+}
 
 while True:
     ts_str     = dt.utcnow().isoformat() + "Z"
@@ -230,6 +272,7 @@ while True:
 
     # ── Health check ──────────────────────────────────────────────────────
     healthy = check_health()
+    record_probe(healthy)
 
     if healthy:
         print(f"[OK] {display_ts}")
@@ -255,9 +298,10 @@ while True:
 
     # ── Anomaly scoring ───────────────────────────────────────────────────
     if detector.enabled:
-        rps, error_rate, latency = fetch_metrics()
+        rps, latency = fetch_metrics()
+        error_rate   = probe_error_rate()
 
-        # Skip scoring when Prometheus returns no data (startup / network gap)
+        # Skip scoring when there's nothing to score on (startup / network gap)
         if rps == 0.0 and error_rate == 0.0 and latency == 0.0:
             pass
         else:
@@ -272,12 +316,12 @@ while True:
                     f"rps={rps:.2f} err={error_rate:.1f}% p95={latency:.0f}ms"
                 )
                 now = time.time()
-                if now - last_anomaly_alert >= ANOMALY_ALERT_COOLDOWN:
+                if now - last_anomaly_alert.get(trigger, 0.0) >= ANOMALY_ALERT_COOLDOWN:
                     send_slack(
                         "ANOMALY",
                         f":warning: *ANOMALY DETECTED*{cause_str} — score={score:.3f} "
                         f"rps={rps:.2f} err={error_rate:.1f}% p95={latency:.0f}ms",
                     )
-                    last_anomaly_alert = now
+                    last_anomaly_alert[trigger] = now
 
     time.sleep(CHECK_INTERVAL)

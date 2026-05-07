@@ -408,8 +408,8 @@ const errChart = new Chart(document.getElementById('err-chart'), {
             const errStr = (val * 100).toFixed(1) + '%';
             if (isAnomBuf[ctx.dataIndex]) {
               const t    = triggerBuf[ctx.dataIndex];
-              const kind = t === 'error_rate_threshold' ? 'Error Rate spike'
-                         : t === 'rps_latency_if'       ? (primaryMetricBuf[ctx.dataIndex] || 'RPS/Latency') + ' anomaly'
+              const kind = t === 'error_rate_if'  ? 'Error Rate anomaly'
+                         : t === 'rps_latency_if' ? (primaryMetricBuf[ctx.dataIndex] || 'RPS/Latency') + ' anomaly'
                          : 'Anomaly';
               return `${kind}  ·  err ${errStr}`;
             }
@@ -532,9 +532,9 @@ function renderIncidents(incidents, anomalyEvents = []) {
   }));
 
   const anomRows = anomalyEvents.map(e => {
-    const label = e.trigger === 'error_rate_threshold' ? 'error spike'
-                : e.trigger === 'rps_latency_if'       ? 'IF model'
-                : 'anomaly';
+    const label = e.trigger === 'error_rate_if'  ? 'IF · error rate'
+                : e.trigger === 'rps_latency_if' ? 'IF · RPS/latency'
+                : 'IF model';
 
     const rps   = typeof e.rps            === 'number' ? e.rps.toFixed(2)              : '—';
     const err   = typeof e.error_rate     === 'number' ? e.error_rate.toFixed(1) + '%' : '—';
