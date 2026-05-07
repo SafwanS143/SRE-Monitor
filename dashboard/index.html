@@ -307,7 +307,6 @@ const primaryMetricBuf = Array(60).fill(null);  // which metric drove rps_latenc
 
 let lastStatusAt    = null;
 let liveUptime      = null;
-let prevRpsBaseline = null;
 let buffersSeeded   = false;
 
 // ── Chart setup ─────────────────────────────────────────────────────────
@@ -478,17 +477,22 @@ function applyStatus(d) {
   pill.className = 'pill ' + (ok ? 'ok' : degrading ? 'warn' : 'fail');
   document.getElementById('pill-txt').textContent = ok ? 'operational' : degrading ? 'degraded performance' : 'outage';
 
-  // RPS — from Prometheus via /api/status
+  // RPS — from Prometheus via /api/status. Compare against the model baseline
+  // (rps mean from baseline.csv) — not the previous poll, so the arrow reflects
+  // deviation from normal, not from the most recent sample.
   const rps = pushRps(typeof d.rps === 'number' ? d.rps : 0);
   const rpsEl = document.getElementById('v-rps');
   rpsEl.textContent = rps.toFixed(2);
   rpsEl.className = 'card-val ' + (ok ? 'c-green' : degrading ? 'c-amber' : 'c-red');
-  if (prevRpsBaseline === null) prevRpsBaseline = rps;
-  const delta = rps - prevRpsBaseline;
-  document.getElementById('s-rps').textContent = ok
-    ? (delta >= 0 ? '↑' : '↓') + ' from ' + prevRpsBaseline.toFixed(2) + ' baseline'
-    : degrading ? 'partial failures' : 'service down';
-  prevRpsBaseline = rps;
+  const rpsBaseline = d.baseline_stats?.rps?.mean;
+  if (ok && typeof rpsBaseline === 'number') {
+    const arrow = rps >= rpsBaseline ? '↑' : '↓';
+    document.getElementById('s-rps').textContent =
+      `${arrow} from ${rpsBaseline.toFixed(2)} baseline`;
+  } else {
+    document.getElementById('s-rps').textContent =
+      ok ? 'baseline pending' : degrading ? 'partial failures' : 'service down';
+  }
 
   // Error rate — from Prometheus via /api/status
   const err = pushErr(typeof d.error_rate_pct === 'number' ? d.error_rate_pct : 0);

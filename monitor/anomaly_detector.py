@@ -8,9 +8,16 @@ log = logging.getLogger("anomaly_detector")
 
 
 class AnomalyDetector:
+    # column index, public name, baseline_stats key
+    _METRICS = (
+        (0, "rps",        "rps"),
+        (1, "error_rate", "error_rate"),
+        (2, "latency",    "p95_latency_ms"),
+    )
+
     def __init__(self, baseline_path: str = "/app/baseline.csv"):
         self.enabled        = False
-        self.model          = None   # IF trained on RPS + latency only
+        self.models         = {}     # one IsolationForest per metric (1-D each)
         self.baseline_stats = None
         self._load(baseline_path)
 
@@ -39,25 +46,32 @@ class AnomalyDetector:
 
             X = np.array(rows)
 
-            # IsolationForest can't learn deviation on a degenerate (std=0)
-            # feature — random splits on a constant produce no isolation. To
-            # let IF actually flag deviations on such columns (e.g. error_rate
-            # is all 0 in a clean baseline), inject tiny synthetic noise on
-            # those columns *only* for fitting. baseline_stats below keeps the
-            # true std for σ-attribution.
-            X_fit = X.copy()
-            rng   = np.random.default_rng(42)
-            for col in range(X_fit.shape[1]):
-                if X_fit[:, col].std() == 0:
-                    X_fit[:, col] = X_fit[:, col] + rng.normal(0, 1e-3, X_fit.shape[0])
+            # One IsolationForest per metric (1-D each). A single multi-feature
+            # IF dilutes single-axis anomalies — only ~1/n splits land on a
+            # given axis, so a 100% error_rate spike with otherwise-normal
+            # rps/latency may not be flagged. Per-metric IFs give each axis
+            # full detection power.
+            #
+            # Degenerate (std=0) columns can't be learned by IF on their own —
+            # random splits on a constant produce no isolation. Inject tiny
+            # synthetic noise on those columns *only* for fitting so IF has
+            # variance to learn against. baseline_stats keeps the true std=0
+            # for σ-attribution.
+            rng = np.random.default_rng(42)
+            self.models = {}
+            for idx, name, _ in self._METRICS:
+                col = X[:, idx].reshape(-1, 1).copy()
+                if col.std() == 0:
+                    col = col + rng.normal(0, 1e-3, col.shape)
+                # contamination=0.01 — only the most extreme 1% of normal
+                # variance counts as anomalous. With 1-D models, this maps
+                # cleanly to per-metric tail behaviour.
+                m = IsolationForest(contamination=0.01, random_state=42)
+                m.fit(col)
+                self.models[name] = m
 
-            # contamination=0.01 so only the most extreme 1% of normal
-            # variance triggers — avoids noise from low-traffic baseline.
-            self.model = IsolationForest(contamination=0.01, random_state=42)
-            self.model.fit(X_fit)
-
-            # baseline_stats for all 3 metrics: used for the error_rate
-            # threshold check and for the dashboard normal band.
+            # baseline_stats for all 3 metrics — used for σ-attribution and
+            # for the dashboard normal band rendering.
             self.baseline_stats = {
                 "rps":            {"mean": float(np.mean(X[:, 0])), "std": float(np.std(X[:, 0]))},
                 "error_rate":     {"mean": float(np.mean(X[:, 1])), "std": float(np.std(X[:, 1]))},
@@ -75,12 +89,6 @@ class AnomalyDetector:
         except Exception as exc:
             log.error("[ANOMALY] Initialisation failed: %s — anomaly detection disabled", exc)
 
-    _METRIC_KEYS = (
-        ("rps",        "rps"),
-        ("error_rate", "error_rate"),
-        ("latency",    "p95_latency_ms"),
-    )
-
     def _sigma(self, name: str, value: float) -> float:
         stats = self.baseline_stats[name]
         std   = stats["std"]
@@ -93,7 +101,7 @@ class AnomalyDetector:
     def _dominant_metric(self, rps: float, error_rate: float, latency: float):
         values = {"rps": rps, "error_rate": error_rate, "p95_latency_ms": latency}
         best_name, best_sigma = "rps", 0.0
-        for label, key in self._METRIC_KEYS:
+        for _, label, key in self._METRICS:
             sigma = self._sigma(key, values[key])
             if sigma > best_sigma:
                 best_sigma, best_name = sigma, label
@@ -101,26 +109,44 @@ class AnomalyDetector:
 
     def score_metrics(self, rps: float, error_rate: float, latency: float):
         """
-        Isolation Forest detection across all 3 signals — returns
-        (is_anomaly, score, trigger).
+        Per-metric Isolation Forest detection — returns (is_anomaly, score, trigger).
+
+        Runs an independent IF on each of {rps, error_rate, latency}; flags
+        anomaly if ANY model fires. Returns the most-anomalous metric's score
+        and bucketises the trigger.
 
         trigger is one of:
-          "error_rate_if"   — IF fired, error_rate is the dominant deviation
-          "rps_latency_if"  — IF fired, RPS or latency is dominant
+          "error_rate_if"   — error_rate IF fired (alone or as dominant deviation)
+          "rps_latency_if"  — RPS or latency IF fired
           None              — no anomaly
         """
         if not self.enabled:
             return False, 0.0, None
 
-        X          = np.array([[rps, error_rate, latency]])
-        is_if_anom = self.model.predict(X)[0] == -1
-        score      = float(self.model.score_samples(X)[0])
+        values   = {"rps": rps, "error_rate": error_rate, "latency": latency}
+        fired    = {}
+        scores   = {}
+        for _, name, _ in self._METRICS:
+            x         = np.array([[values[name]]])
+            fired[name]  = self.models[name].predict(x)[0] == -1
+            scores[name] = float(self.models[name].score_samples(x)[0])
 
-        if not is_if_anom:
+        # Most-anomalous score across all metrics (lowest IF score = most anomalous)
+        score = min(scores.values())
+
+        if not any(fired.values()):
             return False, score, None
 
-        dominant, _ = self._dominant_metric(rps, error_rate, latency)
-        trigger = "error_rate_if" if dominant == "error_rate" else "rps_latency_if"
+        # Trigger bucket: error_rate gets its own bucket; rps/latency share one
+        if fired["error_rate"]:
+            # If error_rate fired, it almost always dominates — but if rps or
+            # latency *also* fired with a more anomalous score, defer to the
+            # dominant-metric heuristic for the bucket label.
+            dominant, _ = self._dominant_metric(rps, error_rate, latency)
+            trigger = "error_rate_if" if dominant == "error_rate" else "rps_latency_if"
+        else:
+            trigger = "rps_latency_if"
+
         return True, score, trigger
 
     def primary_cause(self, rps: float, error_rate: float, latency: float, trigger: str = None) -> str:
