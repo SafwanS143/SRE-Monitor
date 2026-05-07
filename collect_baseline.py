@@ -18,7 +18,7 @@ import requests
 
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 OUTPUT_FILE    = os.getenv("BASELINE_FILE", "baseline.csv")
-DURATION_S     = 600   # 10 minutes
+DURATION_S     = 1200   # 20 minutes
 INTERVAL_S     = 5
 
 

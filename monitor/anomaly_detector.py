@@ -15,6 +15,25 @@ class AnomalyDetector:
         (2, "latency",    "p95_latency_ms"),
     )
 
+    # Per-metric contamination — controls how strict each per-metric IsolationForest is.
+    # Lower = stricter (only fires on extreme tails); higher = more sensitive at
+    # boundaries. Tune per signal:
+    #   - rps     : 0.05 — 1-D IF needs slack so out-of-range bursts (e.g. 7+ rps)
+    #                       fire reliably. Baseline must capture natural dips so
+    #                       legitimate low-rps moments stay in-distribution.
+    #   - error_rate : 0.05 — degenerate baseline gets noise injected at fit time;
+    #                         contamination matters less because any non-zero
+    #                         value lands far outside the noise band.
+    #   - latency : 0.01 — naturally jittery; 5 ms ↔ 40 ms swings are normal
+    #                       inside the baseline range. Strict threshold avoids
+    #                       false positives, still catches genuine outliers
+    #                       (≳ 130 ms or sustained spikes).
+    _CONTAMINATION = {
+        "rps":        0.05,
+        "error_rate": 0.05,
+        "latency":    0.01,
+    }
+
     def __init__(self, baseline_path: str = "/app/baseline.csv"):
         self.enabled        = False
         self.models         = {}     # one IsolationForest per metric (1-D each)
@@ -63,16 +82,10 @@ class AnomalyDetector:
                 col = X[:, idx].reshape(-1, 1).copy()
                 if col.std() == 0:
                     col = col + rng.normal(0, 1e-3, col.shape)
-                # contamination=0.05 — in 1-D, IF effectively does boundary
-                # detection: a test point outside the training range gets a
-                # path length similar to the boundary training samples. With
-                # contamination=0.01 the threshold sits at the single most
-                # extreme training score, so points just past the boundary
-                # are borderline. 0.05 sets the threshold inside the bulk of
-                # the distribution, so out-of-range test points fire
-                # reliably without false-positives during normal operation
-                # (live values sit near the median, far from the 5% tail).
-                m = IsolationForest(contamination=0.05, random_state=42)
+                m = IsolationForest(
+                    contamination=self._CONTAMINATION[name],
+                    random_state=42,
+                )
                 m.fit(col)
                 self.models[name] = m
 
