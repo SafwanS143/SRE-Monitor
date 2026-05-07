@@ -63,10 +63,16 @@ class AnomalyDetector:
                 col = X[:, idx].reshape(-1, 1).copy()
                 if col.std() == 0:
                     col = col + rng.normal(0, 1e-3, col.shape)
-                # contamination=0.01 — only the most extreme 1% of normal
-                # variance counts as anomalous. With 1-D models, this maps
-                # cleanly to per-metric tail behaviour.
-                m = IsolationForest(contamination=0.01, random_state=42)
+                # contamination=0.05 — in 1-D, IF effectively does boundary
+                # detection: a test point outside the training range gets a
+                # path length similar to the boundary training samples. With
+                # contamination=0.01 the threshold sits at the single most
+                # extreme training score, so points just past the boundary
+                # are borderline. 0.05 sets the threshold inside the bulk of
+                # the distribution, so out-of-range test points fire
+                # reliably without false-positives during normal operation
+                # (live values sit near the median, far from the 5% tail).
+                m = IsolationForest(contamination=0.05, random_state=42)
                 m.fit(col)
                 self.models[name] = m
 
