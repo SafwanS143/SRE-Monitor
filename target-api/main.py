@@ -181,6 +181,29 @@ def recover():
     return {"message": "recovered — /health now returns 200"}
 
 
+@app.post("/reset")
+def reset():
+    """Wipe runtime history (incidents, alerts, anomaly scores, metric samples).
+    Keeps baseline_stats so anomaly detection stays trained."""
+    global degradation_level
+    degradation_level = 0.0
+    cleared = {}
+    try:
+        con = sqlite3.connect(DB_PATH)
+        cur = con.cursor()
+        for table in ("incidents", "slack_alerts", "anomaly_scores", "metric_samples"):
+            try:
+                cur.execute(f"DELETE FROM {table}")
+                cleared[table] = cur.rowcount
+            except sqlite3.OperationalError:
+                cleared[table] = "missing"
+        con.commit()
+        con.close()
+    except Exception as exc:
+        return JSONResponse(content={"error": str(exc)}, status_code=500)
+    return {"message": "reset complete", "cleared": cleared}
+
+
 @app.get("/api/status")
 def api_status():
     uptime_seconds = int((datetime.datetime.utcnow() - APP_START).total_seconds())
