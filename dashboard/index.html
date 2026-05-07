@@ -301,7 +301,8 @@ const SLACK_SVG = `<svg viewBox="0 0 24 24" width="13" height="13" fill="white">
 // ── Rolling data buffers ─────────────────────────────────────────────────
 const rpsBuf    = Array(60).fill(null);
 const errBuf    = Array(60).fill(null);
-const isAnomBuf = Array(60).fill(false);  // anomaly flags for errChart red dots
+const isAnomBuf  = Array(60).fill(false);  // anomaly flags for errChart red dots
+const triggerBuf = Array(60).fill(null);   // trigger type per point for tooltip
 
 let lastStatusAt    = null;
 let liveUptime      = null;
@@ -393,6 +394,28 @@ const errChart = new Chart(document.getElementById('err-chart'), {
         border: { display: false },
       },
       y: { ...Y_AXIS, min: 0, max: 1 }
+    },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        filter: item => item.datasetIndex === 2,
+        callbacks: {
+          title: () => '',
+          label(ctx) {
+            const val = ctx.parsed?.y;
+            if (val == null) return null;
+            const errStr = (val * 100).toFixed(1) + '%';
+            if (isAnomBuf[ctx.dataIndex]) {
+              const t    = triggerBuf[ctx.dataIndex];
+              const kind = t === 'error_rate_threshold' ? 'Error Rate spike'
+                         : t === 'rps_latency_if'       ? 'RPS / Latency (IF)'
+                         : 'Anomaly';
+              return `⚠ ${kind}  ·  err ${errStr}`;
+            }
+            return `err ${errStr}`;
+          }
+        }
+      }
     }
   }
 });
@@ -511,13 +534,15 @@ function renderIncidents(incidents, anomalyEvents = []) {
     const label = e.trigger === 'error_rate_threshold' ? 'error spike'
                 : e.trigger === 'rps_latency_if'       ? 'IF model'
                 : 'anomaly';
-    const err   = typeof e.error_rate === 'number' ? e.error_rate.toFixed(1) + '%' : '—';
-    const score = typeof e.score      === 'number' ? e.score.toFixed(3)            : '—';
+    const rps   = typeof e.rps            === 'number' ? e.rps.toFixed(2)              : '—';
+    const err   = typeof e.error_rate     === 'number' ? e.error_rate.toFixed(1) + '%' : '—';
+    const lat   = typeof e.p95_latency_ms === 'number' ? Math.round(e.p95_latency_ms) + 'ms' : '—';
+    const score = typeof e.score          === 'number' ? e.score.toFixed(3)            : '—';
     return {
       ts:   e.timestamp,
       type: 'anomaly',
       cls:  'b-anom',
-      desc: `${label} · err ${err} · score ${score}`,
+      desc: `${label} · rps ${rps} · err ${err} · p95 ${lat} · score ${score}`,
       dur:  '—',
     };
   });
@@ -612,12 +637,14 @@ function updateAnomalyChart(timeseries, baselineStats) {
   const errData = Array(n).fill(null);
   const labels  = Array(n).fill('');
   isAnomBuf.fill(false);
+  triggerBuf.fill(null);
 
   timeseries.forEach((p, i) => {
-    const idx      = offset + i;
-    errData[idx]   = typeof p.error_rate === 'number' ? p.error_rate / 100 : null;
-    isAnomBuf[idx] = !!p.is_anomaly;
-    labels[idx]    = toEastern(p.timestamp);
+    const idx       = offset + i;
+    errData[idx]    = typeof p.error_rate === 'number' ? p.error_rate / 100 : null;
+    isAnomBuf[idx]  = !!p.is_anomaly;
+    triggerBuf[idx] = p.trigger || null;
+    labels[idx]     = toEastern(p.timestamp);
   });
 
   errChart.data.labels           = labels;
