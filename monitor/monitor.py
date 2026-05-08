@@ -18,7 +18,8 @@ SLACK_WEBHOOK     = os.getenv("SLACK_WEBHOOK",     "")
 PROMETHEUS_URL    = os.getenv("PROMETHEUS_URL",    "http://prometheus:9090")
 DB_PATH           = "/data/incidents.db"
 
-ANOMALY_ALERT_COOLDOWN = 60  # seconds between alerts of the same trigger type
+ANOMALY_ALERT_COOLDOWN = 60  # seconds between Slack alerts of same trigger
+ANOMALY_DEDUPE_SEC     = 10  # collapse repeat events of same trigger within this window
 PROBE_WINDOW_SEC       = 30  # rolling window for in-process error rate
 ANOMALY_PROBE_INTERVAL = 1   # high-frequency probe cadence for anomaly signal
 RESTART_GRACE_SEC      = 5   # ignore probes for this long after a restart
@@ -293,6 +294,10 @@ last_anomaly_alert = {     # unix ts of last Slack alert per trigger bucket
     "error_rate_if":  0.0,
     "rps_latency_if": 0.0,
 }
+last_anomaly_logged = {    # unix ts of last DB-logged anomaly per trigger bucket
+    "error_rate_if":  0.0,
+    "rps_latency_if": 0.0,
+}
 
 while True:
     ts_str     = dt.utcnow().isoformat() + "Z"
@@ -316,16 +321,28 @@ while True:
         # Skip scoring when there's nothing to score on (startup / network gap)
         if not (rps == 0.0 and error_rate == 0.0 and latency == 0.0):
             is_anomaly, score, trigger = detector.score_metrics(rps, error_rate, latency)
-            log_anomaly_score(ts_str, rps, error_rate, latency, score, is_anomaly, trigger)
 
-            if is_anomaly:
+            # Dedupe back-to-back anomalies of the same trigger: only the first
+            # event in a 30s window is recorded as an anomaly. Subsequent same-
+            # trigger scoring iterations still write a score row (so the chart
+            # line keeps drawing the elevated value) but with is_anomaly=0 — no
+            # extra red dot, no duplicate row in the events table, no extra log.
+            now = time.time()
+            log_anomaly = is_anomaly
+            if is_anomaly and (now - last_anomaly_logged.get(trigger, 0.0)
+                               < ANOMALY_DEDUPE_SEC):
+                log_anomaly = False
+
+            log_anomaly_score(ts_str, rps, error_rate, latency, score, log_anomaly, trigger if log_anomaly else None)
+
+            if log_anomaly:
+                last_anomaly_logged[trigger] = now
                 cause = detector.primary_cause(rps, error_rate, latency, trigger)
                 cause_str = f" · {cause}" if cause else ""
                 print(
                     f"[ANOMALY] {display_ts}{cause_str} — score={score:.3f} "
                     f"rps={rps:.2f} err={error_rate:.1f}% p95={latency:.0f}ms"
                 )
-                now = time.time()
                 if now - last_anomaly_alert.get(trigger, 0.0) >= ANOMALY_ALERT_COOLDOWN:
                     send_slack(
                         "ANOMALY",
