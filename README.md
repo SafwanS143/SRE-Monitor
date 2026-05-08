@@ -10,7 +10,7 @@
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)](https://github.com/features/actions)
 [![nginx](https://img.shields.io/badge/nginx-009639?logo=nginx&logoColor=white)](https://www.nginx.com/)
 
-A production-style monitoring stack that detects, diagnoses, and recovers from service failures **without human intervention**. A Python agent polls a FastAPI target every 5 seconds, restarts crashed containers via the Docker SDK, and runs a parallel Isolation Forest scorer over Prometheus metrics to flag probabilistic degradation *before* the health-check ever trips. Everything ships to AWS EC2 via Terraform and redeploys on every push to `main` through GitHub Actions.
+A production-style monitoring stack that detects, diagnoses, and recovers from service failures **without human intervention**. A Python agent polls a FastAPI target every 5 seconds, restarts crashed containers via the Docker SDK, and runs a parallel Isolation Forest scorer over Prometheus metrics to flag probabilistic degradation _before_ the health-check ever trips. Everything ships to AWS EC2 via Terraform and redeploys on every push to `main` through GitHub Actions.
 
 ---
 
@@ -20,7 +20,7 @@ A production-style monitoring stack that detects, diagnoses, and recovers from s
                                 ┌─────────────────────────────────────────────────┐
                                 │                  AWS EC2 (t3.micro)             │
                                 │                                                 │
-   Browser ──── :80 ────────────┼──▶ ┌──────────┐                                  │
+   Browser ──── :80 ────────────┼──▶ ┌──────────┐                                │
                                 │    │  nginx   │  serves dashboard +             │
                                 │    │ (static) │  proxies /api/* → target-api    │
                                 │    └────┬─────┘                                 │
@@ -69,19 +69,19 @@ Five containers run side by side under `docker compose`: **target-api**, **monit
 
 ## 🧰 Tech Stack
 
-| Layer            | Tool                                   | Why                                                       |
-| ---------------- | -------------------------------------- | --------------------------------------------------------- |
-| Service runtime  | Python 3.11 · FastAPI · Uvicorn        | Instrumented health endpoint with `/chaos` failure injection |
-| Agent            | Python · Docker SDK · `requests`       | Polls health, restarts containers in-process              |
-| ML detection     | scikit-learn (Isolation Forest) · NumPy| Per-metric outlier models trained on real baseline traffic|
-| Metrics          | Prometheus · `prometheus-fastapi-instrumentator` | 5s scrape, 15s rate windows                     |
-| Visualization    | Vanilla JS + Chart.js · nginx          | Custom ops dashboard, no framework overhead               |
-| Secondary viz    | Grafana                                | Kept as a fallback / classic SRE view                     |
-| Storage          | SQLite                                 | Shared volume between agent and API for incident history  |
-| Orchestration    | Docker Compose                         | One-file local + remote topology                          |
-| Infrastructure   | Terraform · AWS EC2 (Amazon Linux 2)   | `terraform apply` rebuilds the host from scratch          |
-| CI/CD            | GitHub Actions · `scp-action` · `ssh-action` | Push-to-deploy on `main`                            |
-| Alerting         | Slack Incoming Webhooks                | Reactive *and* proactive alert paths                      |
+| Layer           | Tool                                             | Why                                                          |
+| --------------- | ------------------------------------------------ | ------------------------------------------------------------ |
+| Service runtime | Python 3.11 · FastAPI · Uvicorn                  | Instrumented health endpoint with `/chaos` failure injection |
+| Agent           | Python · Docker SDK · `requests`                 | Polls health, restarts containers in-process                 |
+| ML detection    | scikit-learn (Isolation Forest) · NumPy          | Per-metric outlier models trained on real baseline traffic   |
+| Metrics         | Prometheus · `prometheus-fastapi-instrumentator` | 5s scrape, 15s rate windows                                  |
+| Visualization   | Vanilla JS + Chart.js · nginx                    | Custom ops dashboard, no framework overhead                  |
+| Secondary viz   | Grafana                                          | Kept as a fallback / classic SRE view                        |
+| Storage         | SQLite                                           | Shared volume between agent and API for incident history     |
+| Orchestration   | Docker Compose                                   | One-file local + remote topology                             |
+| Infrastructure  | Terraform · AWS EC2 (Amazon Linux 2)             | `terraform apply` rebuilds the host from scratch             |
+| CI/CD           | GitHub Actions · `scp-action` · `ssh-action`     | Push-to-deploy on `main`                                     |
+| Alerting        | Slack Incoming Webhooks                          | Reactive _and_ proactive alert paths                         |
 
 ---
 
@@ -107,11 +107,11 @@ Why three models instead of one 3-D model? A single multi-feature IF dilutes sin
 
 The detector is trained on a real **20-minute baseline** captured by [collect_baseline.py](collect_baseline.py), which samples Prometheus every 5s and writes [baseline.csv](baseline.csv). Contamination is tuned per signal:
 
-| Metric       | Contamination | Reason                                                     |
-| ------------ | ------------- | ---------------------------------------------------------- |
-| `rps`        | 0.05          | Needs slack so legit low-traffic moments stay in-distribution |
+| Metric       | Contamination | Reason                                                              |
+| ------------ | ------------- | ------------------------------------------------------------------- |
+| `rps`        | 0.05          | Needs slack so legit low-traffic moments stay in-distribution       |
 | `error_rate` | 0.05          | Degenerate baseline (mostly zero) — gets noise injected at fit time |
-| `latency`    | 0.01          | Naturally jittery; strict threshold avoids false positives |
+| `latency`    | 0.01          | Naturally jittery; strict threshold avoids false positives          |
 
 When any model fires, the agent attributes the dominant deviation in σ-units (`error_rate (4.2σ from baseline)`), buckets the trigger, and posts a `⚠️ ANOMALY DETECTED` message — gated by a 60-second per-trigger cooldown so a single sustained event doesn't spam the channel.
 
@@ -120,8 +120,9 @@ When any model fires, the agent attributes the dominant deviation in σ-units (`
 A vanilla-JS, dark-themed ops dashboard ([dashboard/index.html](dashboard/index.html)) served by nginx polls `/api/status` and renders:
 
 - 🟢 Live status pill (`ok` / `degrading` / `unhealthy`) derived from the real-time 5xx rate
-- 📈 Three time-series charts: RPS, error rate, p95 latency — all overlaid with the **baseline ±σ band** so you can see the model's normal range
-- 🔴 Anomaly score chart with red markers at every fired event
+- 📊 Top-of-page cards for RPS (vs. baseline), error rate, p95 latency, and SLO compliance
+- 📈 Request Rate chart — last 60 checks of live RPS
+- 🔴 Anomaly Detection — Error Rate chart, overlaid with the **baseline ±σ band** and red markers at every fired event
 - 📋 Incident feed with resolved/unresolved state and duration
 - 💬 Slack alert log (every message the agent sent, mirrored from SQLite)
 
@@ -133,12 +134,12 @@ Grafana is wired into the stack as a secondary view (port `:3000`) for ad-hoc Pr
 
 ## 📡 Monitoring Architecture — Two Alert Paths in Parallel
 
-| Path           | Cadence | Source             | Trigger                          | Action                          |
-| -------------- | ------- | ------------------ | -------------------------------- | ------------------------------- |
-| **Reactive**   | 5s      | `/health` HTTP probe | 3 consecutive failures         | 🔁 restart container + Slack 🚨 |
-| **Proactive**  | 1s probe + 5s scoring | Prometheus rps/latency + in-process error-rate window | Any per-metric Isolation Forest fires | Slack ⚠️ (no auto-action)     |
+| Path          | Cadence               | Source                                                | Trigger                               | Action                          |
+| ------------- | --------------------- | ----------------------------------------------------- | ------------------------------------- | ------------------------------- |
+| **Reactive**  | 5s                    | `/health` HTTP probe                                  | 3 consecutive failures                | 🔁 restart container + Slack 🚨 |
+| **Proactive** | 1s probe + 5s scoring | Prometheus rps/latency + in-process error-rate window | Any per-metric Isolation Forest fires | Slack ⚠️ (no auto-action)       |
 
-The reactive path is the *circuit breaker* — it only acts on confirmed, sustained failure. The proactive path is the *early warning* — a 25% error rate that the slow probe might statistically miss is caught by the high-frequency probe within seconds, and the IF flags it as out-of-distribution before it ever crosses the 3-failure restart threshold.
+The reactive path is the _circuit breaker_ — it only acts on confirmed, sustained failure. The proactive path is the _early warning_ — a 25% error rate that the slow probe might statistically miss is caught by the high-frequency probe within seconds, and the IF flags it as out-of-distribution before it ever crosses the 3-failure restart threshold.
 
 ---
 
@@ -156,12 +157,12 @@ docker compose up --build
 
 Services:
 
-| Service       | URL                       |
-| ------------- | ------------------------- |
-| Dashboard     | http://localhost          |
-| target-api    | http://localhost:8000     |
-| Prometheus    | http://localhost:9090     |
-| Grafana       | http://localhost:3000     |
+| Service    | URL                   |
+| ---------- | --------------------- |
+| Dashboard  | http://localhost      |
+| target-api | http://localhost:8000 |
+| Prometheus | http://localhost:9090 |
+| Grafana    | http://localhost:3000 |
 
 Trigger a failure to watch the loop run:
 
@@ -192,11 +193,11 @@ terraform apply
 
 ### 2. Configure GitHub Secrets
 
-| Secret           | Value                                  |
-| ---------------- | -------------------------------------- |
-| `EC2_HOST`       | The public IP from `terraform output`  |
-| `EC2_SSH_KEY`    | Private key matching the uploaded pub key |
-| `SLACK_WEBHOOK`  | Your Slack incoming-webhook URL        |
+| Secret          | Value                                     |
+| --------------- | ----------------------------------------- |
+| `EC2_HOST`      | The public IP from `terraform output`     |
+| `EC2_SSH_KEY`   | Private key matching the uploaded pub key |
+| `SLACK_WEBHOOK` | Your Slack incoming-webhook URL           |
 
 ### 3. Push to `main`
 
@@ -208,7 +209,7 @@ A full **`terraform destroy && terraform apply`** rebuilds the entire environmen
 
 ## 🧠 Design Decisions Worth Calling Out
 
-- **Three 1-D Isolation Forests instead of one 3-D model.** A combined model gave noticeably worse single-axis recall during testing — a clean error-rate spike with normal traffic and latency would slip through. Splitting by metric also makes attribution trivial: whichever model fires *is* the cause.
+- **Three 1-D Isolation Forests instead of one 3-D model.** A combined model gave noticeably worse single-axis recall during testing — a clean error-rate spike with normal traffic and latency would slip through. Splitting by metric also makes attribution trivial: whichever model fires _is_ the cause.
 - **An in-process probe deque alongside Prometheus.** Prometheus counters reset when the target container restarts and its rate window has a 15s lag. The agent keeps its own 30s rolling window of probe outcomes so error-rate is immediate, survives restarts, and isn't fooled by counter resets.
 - **A unified 5s grace gate after every restart and on cold start.** Without it, the freshly-booted container's connection refusals would refill the probe window, spike latency from boot artifacts, and immediately re-fire the anomaly detector. One shared grace timer fixes both the false-positive and the restart-loop failure modes.
 - **SQLite over a shared volume instead of a separate datastore.** The agent and the API are both single-replica and run on the same box; a real DB would have been infrastructure for infrastructure's sake. If the design ever needed horizontal scaling, this is the first thing that would change.

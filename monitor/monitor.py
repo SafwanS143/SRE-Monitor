@@ -19,7 +19,14 @@ PROMETHEUS_URL    = os.getenv("PROMETHEUS_URL",    "http://prometheus:9090")
 DB_PATH           = "/data/incidents.db"
 
 ANOMALY_ALERT_COOLDOWN = 60  # seconds between Slack alerts of same trigger
-ANOMALY_DEDUPE_SEC     = 10  # collapse repeat events of same trigger within this window
+# Per-trigger dedupe windows. error_rate stays elevated for ~25–30s during a
+# /chaos run (ramp + monitor detection + probe-deque decay), so a longer window
+# collapses one /chaos into one event. rps/latency anomalies are typically more
+# transient — 10s is plenty.
+ANOMALY_DEDUPE_SEC = {
+    "error_rate_if":  20,
+    "rps_latency_if": 10,
+}
 PROBE_WINDOW_SEC       = 30  # rolling window for in-process error rate
 ANOMALY_PROBE_INTERVAL = 1   # high-frequency probe cadence for anomaly signal
 RESTART_GRACE_SEC      = 5   # ignore probes for this long after a restart
@@ -323,15 +330,16 @@ while True:
             is_anomaly, score, trigger = detector.score_metrics(rps, error_rate, latency)
 
             # Dedupe back-to-back anomalies of the same trigger: only the first
-            # event in a 30s window is recorded as an anomaly. Subsequent same-
+            # event in the per-trigger window is recorded. Subsequent same-
             # trigger scoring iterations still write a score row (so the chart
             # line keeps drawing the elevated value) but with is_anomaly=0 — no
             # extra red dot, no duplicate row in the events table, no extra log.
             now = time.time()
             log_anomaly = is_anomaly
-            if is_anomaly and (now - last_anomaly_logged.get(trigger, 0.0)
-                               < ANOMALY_DEDUPE_SEC):
-                log_anomaly = False
+            if is_anomaly:
+                window = ANOMALY_DEDUPE_SEC.get(trigger, 10)
+                if now - last_anomaly_logged.get(trigger, 0.0) < window:
+                    log_anomaly = False
 
             log_anomaly_score(ts_str, rps, error_rate, latency, score, log_anomaly, trigger if log_anomaly else None)
 
