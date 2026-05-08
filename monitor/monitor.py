@@ -186,7 +186,11 @@ def fetch_metrics():
 # degradation that the slow probe would statistically miss.
 probe_history: deque = deque()
 probe_lock = threading.Lock()
-probe_grace_until: float = 0.0   # ignore probe outcomes until this unix ts
+# Single grace gate used by both the probe deque AND the anomaly scoring loop:
+# skip recording probe outcomes and skip scoring rps/latency until this unix ts.
+# Armed on monitor startup (Prom counters not yet populated) and after every
+# container restart (counters reset, latency spikes during boot).
+probe_grace_until: float = 0.0
 
 
 def record_probe(success: bool) -> None:
@@ -276,6 +280,9 @@ detector = AnomalyDetector("/app/baseline.csv")
 write_baseline_stats(detector)
 
 print("[MONITOR] Starting health monitor...")
+# Suppress anomaly scoring for the first few seconds so Prometheus has time
+# to populate its 15s rate window and target-api finishes booting.
+probe_grace_until = time.time() + RESTART_GRACE_SEC
 threading.Thread(target=_anomaly_probe_loop, daemon=True).start()
 
 was_healthy        = True
@@ -298,7 +305,11 @@ while True:
     # ── Anomaly scoring ───────────────────────────────────────────────────
     # Runs BEFORE OK/FAIL print so that when both fire on the same iteration,
     # the [ANOMALY] line appears above the [FAIL] line in the log.
-    if detector.enabled:
+    # Skipped during the post-restart / startup grace window — Prometheus
+    # counters reset on container restart and the 15s rate window contains
+    # garbage data for a few seconds; latency in particular spikes during
+    # boot. Scoring on that data produces false positives.
+    if detector.enabled and time.time() >= probe_grace_until:
         rps, latency = fetch_metrics()
         error_rate   = probe_error_rate()
 
